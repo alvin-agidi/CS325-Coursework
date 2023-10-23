@@ -614,6 +614,11 @@ class BoolASTnode : public ASTnode {
     //};
 };
 
+class ExprAST {
+   public:
+    virtual ~ExprAST() = default;
+};
+
 class VariableExprAST : public ExprAST {
     std::string Name;
 
@@ -645,6 +650,28 @@ class CallExprAST : public ExprAST {
                 std::vector<std::unique_ptr<ExprAST>> Args)
         : Callee(Callee), Args(std::move(Args)) {
     }
+};
+
+class PrototypeAST {
+    std::string Name;
+    std::vector<std::string> Args;
+
+   public:
+    PrototypeAST(const std::string& Name, std::vector<std::string> Args)
+        : Name(Name), Args(std::move(Args)) {}
+
+    const std::string& getName() const { return Name; }
+};
+
+/// FunctionAST - This class represents a function definition itself.
+class FunctionAST {
+    std::unique_ptr<PrototypeAST> Proto;
+    std::unique_ptr<ExprAST> Body;
+
+   public:
+    FunctionAST(std::unique_ptr<PrototypeAST> Proto,
+                std::unique_ptr<ASTNode> Body)
+        : Proto(std::move(Proto)), Body(std::move(Body)) {}
 };
 
 //===----------------------------------------------------------------------===//
