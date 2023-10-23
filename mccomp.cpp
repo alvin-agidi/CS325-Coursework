@@ -38,7 +38,7 @@
 using namespace llvm;
 using namespace llvm::sys;
 
-FILE *pFile;
+FILE* pFile;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -119,11 +119,12 @@ static bool BoolVal;               // Filled in if BOOL_LIT
 static float FloatVal;             // Filled in if FLOAT_LIT
 static std::string StringVal;      // Filled in if String Literal
 static int lineNo, columnNo;
+static std::map<char, int> BinopPrecedence;
 
 static TOKEN returnTok(std::string lexVal, int tok_type) {
     TOKEN return_tok;
-    return_tok.lexeme = lexVal;
     return_tok.type = tok_type;
+    return_tok.lexeme = lexVal;
     return_tok.lineNo = lineNo;
     return_tok.columnNo = columnNo - lexVal.length() - 1;
     return return_tok;
@@ -146,8 +147,7 @@ static TOKEN gettok() {
         columnNo++;
     }
 
-    if (isalpha(LastChar) ||
-        (LastChar == '_')) {  // identifier: [a-zA-Z_][a-zA-Z_0-9]*
+    if (isalpha(LastChar) || LastChar == '_') {  // identifier: [a-zA-Z_][a-zA-Z_0-9]*
         IdentifierStr = LastChar;
         columnNo++;
 
@@ -188,50 +188,6 @@ static TOKEN gettok() {
         return returnTok(IdentifierStr.c_str(), IDENT);
     }
 
-    if (LastChar == '=') {
-        NextChar = getc(pFile);
-        if (NextChar == '=') {  // EQ: ==
-            LastChar = getc(pFile);
-            columnNo += 2;
-            return returnTok("==", EQ);
-        } else {
-            LastChar = NextChar;
-            columnNo++;
-            return returnTok("=", ASSIGN);
-        }
-    }
-
-    if (LastChar == '{') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok("{", LBRA);
-    }
-    if (LastChar == '}') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok("}", RBRA);
-    }
-    if (LastChar == '(') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok("(", LPAR);
-    }
-    if (LastChar == ')') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok(")", RPAR);
-    }
-    if (LastChar == ';') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok(";", SC);
-    }
-    if (LastChar == ',') {
-        LastChar = getc(pFile);
-        columnNo++;
-        return returnTok(",", COMMA);
-    }
-
     if (isdigit(LastChar) || LastChar == '.') {  // Number: [0-9]+.
         std::string NumStr;
 
@@ -267,6 +223,48 @@ static TOKEN gettok() {
         }
     }
 
+    if (LastChar == '=') {
+        NextChar = getc(pFile);
+        if (NextChar == '=') {  // EQ: ==
+            LastChar = getc(pFile);
+            columnNo += 2;
+            return returnTok("==", EQ);
+        } else {
+            LastChar = NextChar;
+            columnNo++;
+            return returnTok("=", ASSIGN);
+        }
+    }
+    if (LastChar == '{') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok("{", LBRA);
+    }
+    if (LastChar == '}') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok("}", RBRA);
+    }
+    if (LastChar == '(') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok("(", LPAR);
+    }
+    if (LastChar == ')') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok(")", RPAR);
+    }
+    if (LastChar == ';') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok(";", SC);
+    }
+    if (LastChar == ',') {
+        LastChar = getc(pFile);
+        columnNo++;
+        return returnTok(",", COMMA);
+    }
     if (LastChar == '&') {
         NextChar = getc(pFile);
         if (NextChar == '&') {  // AND: &&
@@ -279,7 +277,6 @@ static TOKEN gettok() {
             return returnTok("&", int('&'));
         }
     }
-
     if (LastChar == '|') {
         NextChar = getc(pFile);
         if (NextChar == '|') {  // OR: ||
@@ -292,7 +289,6 @@ static TOKEN gettok() {
             return returnTok("|", int('|'));
         }
     }
-
     if (LastChar == '!') {
         NextChar = getc(pFile);
         if (NextChar == '=') {  // NE: !=
@@ -306,7 +302,6 @@ static TOKEN gettok() {
             ;
         }
     }
-
     if (LastChar == '<') {
         NextChar = getc(pFile);
         if (NextChar == '=') {  // LE: <=
@@ -319,7 +314,6 @@ static TOKEN gettok() {
             return returnTok("<", LT);
         }
     }
-
     if (LastChar == '>') {
         NextChar = getc(pFile);
         if (NextChar == '=') {  // GE: >=
@@ -332,7 +326,6 @@ static TOKEN gettok() {
             return returnTok(">", GT);
         }
     }
-
     if (LastChar == '/') {  // could be division or could be the start of a comment
         LastChar = getc(pFile);
         columnNo++;
@@ -363,8 +356,15 @@ static TOKEN gettok() {
 }
 
 //===----------------------------------------------------------------------===//
-// Parser
+// Recursive Descent Parser - Function call for each production
 //===----------------------------------------------------------------------===//
+
+/* Add function calls for each production */
+
+// program ::= extern_list decl_list
+static void parser() {
+    // add body
+}
 
 /// CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
 /// token the parser is looking at.  getNextToken reads another token from the
@@ -382,7 +382,177 @@ static TOKEN getNextToken() {
     return CurTok = temp;
 }
 
-static void putBackToken(TOKEN tok) { tok_buffer.push_front(tok); }
+static std::unique_ptr<ExprAST> ParseIntExpr() {
+    auto Result = std::make_unique<IntExprAST>(IntVal);
+    getNextToken();  // consume the number
+    return std::move(Result);
+}
+
+static std::unique_ptr<ExprAST> ParseFloatExpr() {
+    auto Result = std::make_unique<FloatExprAST>(FloatVal);
+    getNextToken();  // consume the number
+    return std::move(Result);
+}
+
+static std::unique_ptr<ExprAST> ParseBoolExpr() {
+    auto Result = std::make_unique<BoolExprAST>(BoolVal);
+    getNextToken();  // consume the number
+    return std::move(Result);
+}
+
+static std::unique_ptr<ExprAST> ParseBinaryExpr() {
+    auto Result = std::make_unique<BinaryExprAST>(IdentifierStr, LHS, RHS);
+    getNextToken();  // consume the number
+    return std::move(Result);
+}
+
+static std::unique_ptr<ExprAST> ParseParenExpr() {
+    getNextToken();  // eat (.
+    auto V = ParseExpression();
+    if (!V)
+        return nullptr;
+
+    if (CurTok != ')')
+        return LogError("expected ')'");
+    getNextToken();  // eat ).
+    return V;
+}
+
+static std::unique_ptr<ExprAST> ParsePrimaryExpr() {
+    switch (CurTok.type) {
+        default:
+            return LogError("unknown token when expecting an expression");
+        case IDENT:
+            return ParseIdentifierExpr();
+        case INT_LIT:
+            return ParseIntExpr();
+        case FLOAT_LIT:
+            return ParseFloatExpr();
+        case BOOL_LIT:
+            return ParseBoolExpr();
+        case "(":
+            return ParseParenExpr();
+    }
+}
+
+static std::unique_ptr<ExprAST> ParseExpression() {
+    auto LHS = ParsePrimary();
+    if (!LHS)
+        return nullptr;
+
+    return ParseBinOpRHS(0, std::move(LHS));
+}
+
+static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
+                                              std::unique_ptr<ExprAST> LHS) {
+    // If this is a binop, find its precedence.
+    while (true) {
+        int TokPrec = GetTokPrecedence();
+
+        // If this is a binop that binds at least as tightly as the current binop,
+        // consume it, otherwise we are done.
+        if (TokPrec < ExprPrec)
+            return LHS;
+        // Okay, we know this is a binop.
+        int BinOp = CurTok;
+        getNextToken();  // eat binop
+
+        // Parse the primary expression after the binary operator.
+        auto RHS = ParsePrimary();
+        if (!RHS)
+            return nullptr;
+
+        // If BinOp binds less tightly with RHS than the operator after RHS, let
+        // the pending operator take RHS as its LHS.
+        int NextPrec = GetTokPrecedence();
+        if (TokPrec < NextPrec) {
+            RHS = ParseBinOpRHS(TokPrec + 1, std::move(RHS));
+            if (!RHS)
+                return nullptr;
+        }
+        // Merge LHS/RHS.
+        LHS = std::make_unique<BinaryExprAST>(BinOp, std::move(LHS),
+                                              std::move(RHS));
+    }  // loop around to the top of the while loop.
+}
+
+static std::unique_ptr<PrototypeAST> ParsePrototype() {
+    if (CurTok != tok_identifier)
+        return LogErrorP("Expected function name in prototype");
+
+    std::string FnName = IdentifierStr;
+    getNextToken();
+
+    if (CurTok != '(')
+        return LogErrorP("Expected '(' in prototype");
+
+    // Read the list of argument names.
+    std::vector<std::string> ArgNames;
+    while (getNextToken() == tok_identifier)
+        ArgNames.push_back(IdentifierStr);
+    if (CurTok != ')')
+        return LogErrorP("Expected ')' in prototype");
+
+    // success.
+    getNextToken();  // eat ')'.
+
+    return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+}
+
+static std::unique_ptr<PrototypeAST> ParseExtern() {
+    getNextToken();  // eat extern.
+    return ParsePrototype();
+}
+
+static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
+    if (auto E = ParseExpression()) {
+        // Make an anonymous proto.
+        auto Proto = std::make_unique<PrototypeAST>("", std::vector<std::string>());
+        return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    }
+    return nullptr;
+}
+
+static std::unique_ptr<FunctionAST> ParseDefinition() {
+    getNextToken();  // eat def.
+    auto Proto = ParsePrototype();
+    if (!Proto) return nullptr;
+
+    if (auto E = ParseExpression())
+        return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+    return nullptr;
+}
+
+static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
+    std::string IdName = IdentifierStr;
+    getNextToken();     // eat identifier.
+    if (CurTok != '(')  // Simple variable ref.
+        return std::make_unique<VariableExprAST>(IdName);
+
+    // Call.
+    getNextToken();  // eat (
+    std::vector<std::unique_ptr<ExprAST>> Args;
+    if (CurTok != ')') {
+        while (true) {
+            if (auto Arg = ParseExpression())
+                Args.push_back(std::move(Arg));
+            else
+                return nullptr;
+
+            if (CurTok == ')')
+                break;
+
+            if (CurTok != ',')
+                return LogError("Expected ')' or ',' in argument list");
+            getNextToken();
+        }
+    }
+
+    // Eat the ')'.
+    getNextToken();
+
+    return std::make_unique<CallExprAST>(IdName, std::move(Args));
+}
 
 //===----------------------------------------------------------------------===//
 // AST nodes
@@ -392,7 +562,7 @@ static void putBackToken(TOKEN tok) { tok_buffer.push_front(tok); }
 class ASTnode {
    public:
     virtual ~ASTnode() {}
-    virtual Value *codegen() = 0;
+    virtual Value* codegen() = 0;
     virtual std::string to_string() const { return ""; };
 };
 
@@ -403,24 +573,88 @@ class IntASTnode : public ASTnode {
     std::string Name;
 
    public:
-    IntASTnode(TOKEN tok, int val) : Val(val), Tok(tok) {}
-    virtual Value *codegen() override;
+    IntASTnode(TOKEN tok, int val)
+        : Val(val), Tok(tok) {
+    }
+    virtual Value* codegen() override;
     // virtual std::string to_string() const override {
     // return a sting representation of this AST node
     //};
 };
 
-/* add other AST nodes as nessasary */
+/// FloatASTnode - Class for floating literals
+class FloatASTnode : public ASTnode {
+    gloat Val;
+    TOKEN Tok;
+    std::string Name;
+
+   public:
+    FloatASTnode(TOKEN tok, float val)
+        : Val(val), Tok(tok) {
+    }
+    virtual Value* codegen() override;
+    // virtual std::string to_string() const override {
+    // return a sting representation of this AST node
+    //};
+};
+
+/// FloatASTnode - Class for floating literals
+class BoolASTnode : public ASTnode {
+    bool Val;
+    TOKEN Tok;
+    std::string Name;
+
+   public:
+    BoolASTnode(TOKEN tok, bool val)
+        : Val(val), Tok(tok) {
+    }
+    virtual Value* codegen() override;
+    // virtual std::string to_string() const override {
+    // return a sting representation of this AST node
+    //};
+};
+
+class VariableExprAST : public ExprAST {
+    std::string Name;
+
+   public:
+    VariableExprAST(const std::string& Name)
+        : Name(Name) {
+    }
+};
+
+/// BinaryExprAST - Expression class for a binary operator.
+class BinaryExprAST : public ExprAST {
+    char Op;
+    std::unique_ptr<ExprAST> LHS, RHS;
+
+   public:
+    BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
+                  std::unique_ptr<ExprAST> RHS)
+        : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {
+    }
+};
+
+/// CallExprAST - Expression class for function calls.
+class CallExprAST : public ExprAST {
+    std::string Callee;
+    std::vector<std::unique_ptr<ExprAST>> Args;
+
+   public:
+    CallExprAST(const std::string& Callee,
+                std::vector<std::unique_ptr<ExprAST>> Args)
+        : Callee(Callee), Args(std::move(Args)) {
+    }
+};
 
 //===----------------------------------------------------------------------===//
-// Recursive Descent Parser - Function call for each production
+// AST Printer
 //===----------------------------------------------------------------------===//
 
-/* Add function calls for each production */
-
-// program ::= extern_list decl_list
-static void parser() {
-    // add body
+inline llvm::raw_ostream& operator<<(llvm::raw_ostream& os,
+                                     const ASTnode& ast) {
+    os << ast.to_string();
+    return os;
 }
 
 //===----------------------------------------------------------------------===//
@@ -432,20 +666,15 @@ static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
 
 //===----------------------------------------------------------------------===//
-// AST Printer
-//===----------------------------------------------------------------------===//
-
-inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
-                                     const ASTnode &ast) {
-    os << ast.to_string();
-    return os;
-}
-
-//===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
+    BinopPrecedence['<'] = 10;
+    BinopPrecedence['+'] = 20;
+    BinopPrecedence['-'] = 20;
+    BinopPrecedence['*'] = 40;
+
     if (argc == 2) {
         pFile = fopen(argv[1], "r");
         if (pFile == NULL)
