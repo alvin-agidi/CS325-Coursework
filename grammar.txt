@@ -39,8 +39,8 @@ else_stmt  ::= "else" block | epsilon
 return_stmt ::= "return" ";" | "return" expr ";"
 
 # operators in order of increasing precedence
-expr ::= IDENT ident_expr | rval_term_1 rval
-ident_expr ::= "=" expr | ident_rval rval
+expr ::= IDENT ident_expr | rval_term_1 rval_1
+ident_expr ::= "=" expr | ident_rval rval_1
 
 ident_rval ::= "(" args ")" | epsilon
 
@@ -50,12 +50,12 @@ rval_term_1 ::= "-" rval_term
     | "(" expr ")"
     | INT_LIT | FLOAT_LIT | BOOL_LIT
 
-rval ::= "||" rval_term rval
-    | "&&" rval_term rval
-    | "==" rval_term rval | "!=" rval_term rval
-    | "<=" rval_term rval | "<" rval_term rval | ">=" rval_term rval | ">" rval_term rval
-    | "+" rval_term rval | "-" rval_term rval
-    | "*" rval_term rval | "/" rval_term rval | "%" rval_term rval | epsilon
+rval_1 ::= "||" rval_term rval_1 | rval_2
+rval_2 ::= "&&" rval_term rval_1 | rval_3
+rval_3 ::= "==" rval_term rval_1 | "!=" rval_term rval_1 | rval_4
+rval_4 ::= "<=" rval_term rval_1 | "<" rval_term rval_1 | ">=" rval_term rval_1 | ">" rval_term rval_1 | rval_5
+rval_5 ::= "+" rval_term rval_1 | "-" rval_term rval_1 | rval_6
+rval_6 ::= "*" rval_term rval_1 | "/" rval_term rval_1 | "%" rval_term rval_1 | epsilon
 
 args ::= expr arg_list | epsilon
 arg_list ::= "," expr arg_list | epsilon 
@@ -94,8 +94,17 @@ FIRST(ident_expr) = {"="} + FIRST(ident_rval) = {"=", "(", epsilon}
 
 FIRST(ident_rval) = {"(", epsilon}
 
-FIRST(rval) = {"||"} + FIRST(rval_2) = {"||", "&&", "==", "!=", "<", "<=", ">", ">=", "+", "-", "*", "/", "%", epsilon}
+FIRST(rval_1) = {"||"} + FIRST(rval_2) = {"||", "&&", "==", "!=", "<", "<=", ">", ">=", "+", "-", "*", "/", "%", epsilon}
 
+FIRST(rval_2) = {"&&"} + FIRST(rval_3) = {"&&", "==", "!=", "<", "<=", ">", ">=", "+", "-", "*", "/", "%", epsilon}
+
+FIRST(rval_3) = {"==", "!="} + FIRST(rval_4) = {"==", "!=", "<", "<=", ">", ">=", "+", "-", "*", "/", "%", epsilon}
+
+FIRST(rval_4) = {"<", "<=", ">", ">="} + FIRST(rval_5) = {"<", "<=", ">", ">=", "+", "-", "*", "/", "%", epsilon}
+
+FIRST(rval_5) = {"+", "-"} + FIRST(rval_5) = {"+", "-", "*", "/", "%", epsilon}
+
+FIRST(rval_6) = {"*", "/", "%", epsilon}
 
 FIRST(args) = FIRST(expr) + {epsilon} = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, epsilon}
 
