@@ -63,3 +63,48 @@ ident_rval ::= "(" args ")" | epsilon
 
 args ::= expr arg_list | epsilon
 arg_list ::= "," expr arg_list | epsilon 
+
+# FIRST SETS
+
+FIRST(program) = FIRST(extern_list) + FIRST(decl) = {"extern", epsilon, "void", "int", "float", "bool"}
+
+FIRST(extern_list) = FIRST(extern) + {epsilon} = {"extern", epsilon}
+
+FIRST(decl) = {"void"} + FIRST(var_decl) = {"void", "int", "float", "bool"}
+
+FIRST(decl_list) = FIRST(decl) + {epsilon} = {"void", "int", "float", "bool", epsilon}
+
+FIRST(params) = FIRST(param) + {epsilon} = {"void", "int", "float", "bool", epsilon}
+
+FIRST(param) = FIRST(type_spec) = {"void", "int", "float", "bool"}
+
+FIRST(type_spec) = {"void"} + FIRST(var_decl) = {"void", "int", "float", "bool"}
+
+FIRST(local_decl_list) = FIRST(local_decl) + {epsilon} = {epsilon, "int", "float", "bool"}
+
+FIRST(local_decl) = FIRST(var_type) = {"int", "float", "bool"}
+
+FIRST(stmt_list) = FIRST(stmt) + {epsilon} = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "if", "while", "return", epsilon}
+
+FIRST(stmt) = FIRST(expr_stmt) + FIRST(if_stmt) + FIRST(while_stmt) + FIRST(return_stmt) = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "if", "while", "return"}
+
+FIRST(expr_stmt) = FIRST(expr) + {";"} = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";"}
+
+FIRST(expr) = {IDENT} + FIRST(rval_1) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_1) = FIRST(rval_2) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_2) = FIRST(rval_3) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_3) = FIRST(rval_4) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_4) = FIRST(rval_5) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_5) = FIRST(rval_6) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_6) = FIRST(rval_term) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(rval_term) = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(args) = FIRST(expr) + {epsilon} = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT, epsilon}
+
