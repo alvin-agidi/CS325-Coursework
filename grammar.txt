@@ -42,24 +42,24 @@ expr ::= IDENT "=" expr | rval_1
 
 # Operators in order of increasing precedence
 rval_1 ::= rval_2 rval_1_list
-rval_1_list ::= "||" rval_2 rval_1_list | epsilon
+rval_1_list ::= "||" rval_1 | epsilon
 rval_2 ::= rval_3 rval_2_list
-rval_2_list ::= "&&" rval_3 rval_2_list | epsilon
+rval_2_list ::= "&&" rval_2 | epsilon
 rval_3 ::= rval_4 rval_3_list
-rval_3_list ::= "==" rval_4 rval_3_list | "!=" rval_4 rval_3_list | epsilon
+rval_3_list ::= "==" rval_3 | "!=" rval_3 | epsilon
 rval_4 ::= rval_5 rval_4_list
-rval_4_list ::= "<" rval_5 rval_4_list | "<=" rval_5 rval_4_list | ">" rval_5 rval_4_list | "=" rval_5 rval_4_list | epsilon
+rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | "=" rval_4 | epsilon
 rval_5 ::= rval_6 rval_5_list
-rval_5_list ::= "+" rval_6 rval_5_list | "-" rval_6 rval_5_list | epsilon
+rval_5_list ::= "+" rval_5 | "-" rval_5 | epsilon
 rval_6 ::= rval_term rval_6_list
-rval_6_list ::= "*" rval_term rval_6_list | "/" rval_term rval_6_list | "%" rval_term rval_6_list | epsilon
+rval_6_list ::= "*" rval_6 | "/" rval_6 | "%" rval_6 | epsilon
 rval_term ::= "-" expr
     | "!" expr
     | "(" expr ")"
-    | IDENT ident_rval
+    | IDENT ident_body
     | INT_LIT | FLOAT_LIT | BOOL_LIT
 
-ident_rval ::= "(" args ")" | epsilon
+ident_body ::= "(" args ")" | epsilon
 
 args ::= expr arg_list | epsilon
 arg_list ::= "," expr arg_list | epsilon 
@@ -80,6 +80,10 @@ FIRST(param) = FIRST(type_spec) = {"void", "int", "float", "bool"}
 
 FIRST(type_spec) = {"void"} + FIRST(var_decl) = {"void", "int", "float", "bool"}
 
+FIRST(func_body) = {"("}
+
+FIRST(block) = {"{"}
+
 FIRST(local_decl_list) = FIRST(local_decl) + {epsilon} = {epsilon, "int", "float", "bool"}
 
 FIRST(local_decl) = FIRST(var_type) = {"int", "float", "bool"}
@@ -91,6 +95,14 @@ FIRST(stmt) = FIRST(expr_stmt) + FIRST(if_stmt) + FIRST(while_stmt) + FIRST(retu
 FIRST(expr_stmt) = FIRST(expr) + {";"} = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";"}
 
 FIRST(expr) = {IDENT} + FIRST(rval_1) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
+
+FIRST(while_stmt) = {"while"}
+
+FIRST(if_stmt) = {"if"}
+
+FIRST(else_stmt) = {"else"}
+
+FIRST(return_stmt) = {"return"}
 
 FIRST(rval_1) = FIRST(rval_2) = {"-", "!", "(", IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT}
 
@@ -166,24 +178,24 @@ FOLLOW(rval_term) = FIRST(rval_6_list) + FOLLOW(rval_6_list) + FOLLOW(rval_6) = 
 
 FOLLOW(rval_6_list) = FOLLOW(rval_6) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_6) = FIRST(rval_5_list) + FOLLOW(rval_5_list) + FOLLOW(rval_5) = {"+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(rval_6) = FIRST(rval_5_list) + FOLLOW(rval_5_list) + FOLLOW(rval_5) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_5_list) = FOLLOW(rval_5) = {"<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(rval_5_list) = FOLLOW(rval_5) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_5) = FIRST(rval_4_list) + FOLLOW(rval_4_list) + FOLLOW(rval_4) = {"<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(rval_5) = FIRST(rval_4_list) + FOLLOW(rval_4_list) + FOLLOW(rval_4) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_4_list) = FOLLOW(rval_4) = {"==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(rval_4_list) = FOLLOW(rval_4) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_4) = FIRST(rval_3_list) + FOLLOW(rval_3_list) + FOLLOW(rval_3) = {"==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(rval_4) = FIRST(rval_3_list) + FOLLOW(rval_3_list) + FOLLOW(rval_3) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_3_list) = FOLLOW(rval_3) = {"&&", "||", ")", ";", ","}
+FOLLOW(rval_3_list) = FOLLOW(rval_3) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_3) = FIRST(rval_2_list) + FOLLOW(rval_2_list) + FOLLOW(rval_2) = {"&&", "||", ")", ";", ","}
+FOLLOW(rval_3) = FIRST(rval_2_list) + FOLLOW(rval_2_list) + FOLLOW(rval_2) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_2_list) = FOLLOW(rval_2) = {"||", ")", ";", ","}
+FOLLOW(rval_2_list) = FOLLOW(rval_2) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_2) = FIRST(rval_1_list) + FOLLOW(rval_1_list) + FOLLOW(rval_1) = {"||", ")", ";", ","}
+FOLLOW(rval_2) = FIRST(rval_1_list) + FOLLOW(rval_1_list) + FOLLOW(rval_1) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_1_list) = FOLLOW(rval_1) = {")", ";", ","}
+FOLLOW(rval_1_list) = FOLLOW(rval_1) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
 
-FOLLOW(rval_1) = FOLLOW(expr) = {")", ";", ","}
+FOLLOW(rval_1) = FOLLOW(expr) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
