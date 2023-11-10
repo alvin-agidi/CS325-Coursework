@@ -378,11 +378,14 @@ class ASTnode {
     virtual std::string toString() const { return ""; };
 };
 
-template <typename T>
-std::string to_string(const std::vector<T>& list) {
+template <typename ASTnode>
+std::string to_string(const std::vector<ASTnode>& list, std::string delimiter = " ") {
     std::string result;
     for (auto& astNode : list) {
-        result += "3";
+        result += (*astNode).toString() + delimiter;
+    }
+    if (!list.empty()) {
+        result.erase(result.length() - delimiter.length());
     }
     return std::move(result);
 }
@@ -396,7 +399,7 @@ class LocalDeclarationASTnode : public ASTnode {
     LocalDeclarationASTnode(int type, std::string name) : type(type), name(name) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return std::to_string(type) + name;
+        return std::to_string(type) + " " + name;
     };
 };
 
@@ -409,7 +412,7 @@ class ParamASTnode : public ASTnode {
     ParamASTnode(int type, std::string name) : type(type), name(name) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return std::to_string(type) + name;
+        return std::to_string(type) + " " + name;
     };
 };
 
@@ -436,23 +439,26 @@ class ExpressionASTnode : public StatementASTnode {
    public:
     ExpressionASTnode(){};
     ExpressionASTnode(std::unique_ptr<ExpressionASTnode> subExpression, std::string binOp, std::unique_ptr<ExpressionASTnode> subExpression2) : subExpression(std::move(subExpression)), binOp(binOp), subExpression2(std::move(subExpression2)) {}
-    ExpressionASTnode(std::string name, std::unique_ptr<ExpressionASTnode> subExpression, std::unique_ptr<ExpressionASTnode> subExpression2) : name(name), subExpression(std::move(subExpression)), subExpression2(std::move(subExpression2)) {}
+    ExpressionASTnode(std::string name, std::string binOp, std::unique_ptr<ExpressionASTnode> subExpression, std::vector<std::unique_ptr<ExpressionASTnode>> args) : name(name), binOp(binOp), subExpression(std::move(subExpression)), args(std::move(args)) {}
     ExpressionASTnode(std::string op, std::unique_ptr<ExpressionASTnode> subExpression, std::string name, std::vector<std::unique_ptr<ExpressionASTnode>> args, std::string intVal, std::string floatVal, std::string boolVal) : op(op), subExpression(std::move(subExpression)), name(name), args(std::move(args)), intVal(intVal), floatVal(floatVal), boolVal(boolVal) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        if (!intVal.empty()) {
-            return intVal;
-        } else if (!floatVal.empty()) {
-            return floatVal;
-        } else if (!boolVal.empty()) {
-            return boolVal;
+        std::string string = intVal + floatVal + boolVal + name;
+        if (!args.empty()) {
+            string += "(" + to_string(args, ", ") + ")";
         }
-        std::string string = "";
-        if (!name.empty()) {
-            string += name + "(" + to_string(args) + ")" + op;
+        if (name != "" && binOp == "" && subExpression) {
+            string += "=";
         }
-        string += subExpression->toString() + binOp + subExpression2->toString();
-
+        if (!subExpression2) {
+            string += binOp;
+        }
+        if (subExpression) {
+            string += op + subExpression->toString();
+        };
+        if (subExpression2) {
+            string += binOp + subExpression2->toString();
+        }
         return string;
     };
 };
@@ -469,20 +475,6 @@ class ReturnStatementASTnode : public StatementASTnode {
     };
 };
 
-class WhileStatementASTnode : public StatementASTnode {
-    std::unique_ptr<ExpressionASTnode> expression;
-    std::unique_ptr<StatementASTnode> statement;
-
-   public:
-    WhileStatementASTnode(){};
-    WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
-                          std::unique_ptr<StatementASTnode> statement) : expression(std::move(expression)), statement(std::move(statement)) {}
-    // virtual Value* codegen() override;
-    virtual std::string toString() const override {
-        return "while (" + expression->toString() + ")" + statement->toString();
-    };
-};
-
 class BlockASTnode : public ASTnode {
     std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList;
     std::vector<std::unique_ptr<StatementASTnode>> statementList;
@@ -493,7 +485,21 @@ class BlockASTnode : public ASTnode {
                  std::vector<std::unique_ptr<StatementASTnode>> statementList) : localDeclarationList(std::move(localDeclarationList)), statementList(std::move(statementList)) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return "{" + to_string(localDeclarationList) + to_string(statementList) + "}";
+        return " { " + to_string(localDeclarationList) + " " + to_string(statementList) + " }";
+    };
+};
+
+class WhileStatementASTnode : public StatementASTnode {
+    std::unique_ptr<ExpressionASTnode> expression;
+    std::unique_ptr<BlockASTnode> block;
+
+   public:
+    WhileStatementASTnode(){};
+    WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
+                          std::unique_ptr<BlockASTnode> block) : expression(std::move(expression)), block(std::move(block)) {}
+    // virtual Value* codegen() override;
+    virtual std::string toString() const override {
+        return "while (" + expression->toString() + ")" + block->toString();
     };
 };
 
@@ -505,7 +511,7 @@ class ElseStatementASTnode : public StatementASTnode {
     ElseStatementASTnode(std::unique_ptr<BlockASTnode> block) : block(std::move(block)) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return "else " + block->toString();
+        return " else" + block->toString();
     };
 };
 
@@ -528,16 +534,16 @@ class IfStatementASTnode : public StatementASTnode {
 class DeclarationASTnode : public ASTnode {
     int type;
     std::string name;
-    std::vector<std::unique_ptr<ParamASTnode>> params;
+    std::vector<std::unique_ptr<ParamASTnode>> paramList;
     std::unique_ptr<BlockASTnode> block;
 
    public:
     DeclarationASTnode(){};
-    DeclarationASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> params,
-                       std::unique_ptr<BlockASTnode> block) : type(type), name(name), params(std::move(params)), block(std::move(block)) {}
+    DeclarationASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList,
+                       std::unique_ptr<BlockASTnode> block) : type(type), name(name), paramList(std::move(paramList)), block(std::move(block)) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return std::to_string(type) + name + to_string(params) + block->toString();
+        return std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toString();
     };
 };
 
@@ -551,7 +557,7 @@ class ExternASTnode : public ASTnode {
     ExternASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList) : type(type), name(name), paramList(std::move(paramList)) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return std::to_string(type) + name + to_string(paramList) + "2";
+        return "extern " + std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
     };
 };
 
@@ -565,7 +571,7 @@ class ProgramASTnode : public ASTnode {
                    std::vector<std::unique_ptr<DeclarationASTnode>> declarationList) : externList(std::move(externList)), declarationList(std::move(declarationList)) {}
     // virtual Value* codegen() override;
     virtual std::string toString() const override {
-        return to_string(externList) + to_string(declarationList);
+        return to_string(externList) + " " + to_string(declarationList);
     };
 };
 //===----------------------------------------------------------------------===//
@@ -609,17 +615,18 @@ struct Expression {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> Parse();
 };
-TokenSet Expression::firstSet = TokenSet({});
+TokenSet Expression::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // arg_list ::= "," expr arg_list | epsilon
 struct ArgList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing arg list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> argList;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             getNextToken();
             argList.emplace_back(std::move(Expression::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        };
         return argList;
     }
 };
@@ -629,11 +636,11 @@ TokenSet ArgList::firstSet = TokenSet({COMMA});
 struct Args {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing args", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
         if (Expression::firstSet.contains(CurTok.type)) {
             args.emplace_back(std::move(Expression::Parse()));
             std::vector<std::unique_ptr<ExpressionASTnode>> argList = ArgList::Parse();
-            // args.insert(args.end(), argList.begin(), argList.end());
             std::move(argList.begin(), argList.end(), std::back_inserter(args));
         }
         return args;
@@ -645,8 +652,9 @@ TokenSet Args::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT,
 struct IdentBody {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing identBody", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
-        if (CurTok.lexeme == "(") {
+        if (firstSet.contains(CurTok.type)) {
             getNextToken();
             args = Args::Parse();
             getNextToken();
@@ -654,6 +662,7 @@ struct IdentBody {
         return args;
     }
 };
+TokenSet IdentBody::firstSet = TokenSet({LPAR});
 
 //  rval_term ::= "-" expr
 //       | "!" expr
@@ -663,6 +672,7 @@ struct IdentBody {
 struct RvalTerm {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing rvalterm", CurTok.lexeme.c_str(), CurTok.type);
         std::string op;
         std::unique_ptr<ExpressionASTnode> expression;
         std::string ident;
@@ -673,6 +683,7 @@ struct RvalTerm {
         switch (CurTok.type) {
             case IDENT:
                 ident = CurTok.lexeme;
+                getNextToken();
                 args = IdentBody::Parse();
                 break;
             case MINUS:
@@ -718,10 +729,11 @@ TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_6_list ::= "*" rval_6 | "/" rval_6 | "%" rval_6 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval6List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval6;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval6;
     if (Rval6List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval6 = Rval6::Parse();
     }
@@ -730,6 +742,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval6List::Parse() {
 
 // rval_6 ::= rval_term rval_6_list
 std::unique_ptr<ExpressionASTnode> Rval6::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rvalTerm = RvalTerm::Parse();
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval6List = Rval6List::Parse();
     std::string binOp = std::get<0>(rval6List);
@@ -751,10 +764,11 @@ TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_5_list ::= "+" rval_5 | "-" rval_5 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval5List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval5;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval5;
     if (Rval5List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval5 = Rval5::Parse();
     }
@@ -763,6 +777,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval5List::Parse() {
 
 // rval_5 ::= rval_6 rval_5_list
 std::unique_ptr<ExpressionASTnode> Rval5::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rval6 = Rval6::Parse();
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval5List = Rval5List::Parse();
     std::string binOp = std::get<0>(rval5List);
@@ -784,10 +799,11 @@ TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | "=" rval_4 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval4List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval4;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval4;
     if (Rval4List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval4 = Rval4::Parse();
     }
@@ -796,6 +812,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval4List::Parse() {
 
 // rval_4 ::= rval_5 rval_4_list
 std::unique_ptr<ExpressionASTnode> Rval4::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rval5 = Rval5::Parse();
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval4List = Rval4List::Parse();
     std::string binOp = std::get<0>(rval4List);
@@ -817,10 +834,11 @@ TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_3_list ::= "==" rval_3 | "!=" rval_3 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval3List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval3;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval3;
     if (Rval3List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval3 = Rval3::Parse();
     }
@@ -829,6 +847,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval3List::Parse() {
 
 // rval_3 ::= rval_4 rval_3_list
 std::unique_ptr<ExpressionASTnode> Rval3::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rval4 = Rval4::Parse();
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval3List = Rval3List::Parse();
     std::string binOp = std::get<0>(rval3List);
@@ -850,10 +869,11 @@ TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_2_list ::= "&&" rval_2 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval2List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval2;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval2;
     if (Rval2List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval2 = Rval2::Parse();
     }
@@ -862,6 +882,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval2List::Parse() {
 
 // rval_2 ::= rval_3 rval_2_list
 std::unique_ptr<ExpressionASTnode> Rval2::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rval3 = std::move(Rval3::Parse());
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval2List = Rval2List::Parse();
     std::string binOp = std::get<0>(rval2List);
@@ -883,10 +904,11 @@ TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT
 
 // rval_1_list ::= "||" rval_1 | epsilon
 std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval1List::Parse() {
-    std::unique_ptr<ExpressionASTnode> rval1;
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
+    std::unique_ptr<ExpressionASTnode> rval1;
     if (Rval1List::firstSet.contains(CurTok.type)) {
-        std::string binOp = CurTok.lexeme;
+        binOp = CurTok.lexeme;
         getNextToken();
         rval1 = Rval1::Parse();
     }
@@ -895,6 +917,7 @@ std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval1List::Parse() {
 
 // rval_1 ::= rval_2 rval_1_list
 std::unique_ptr<ExpressionASTnode> Rval1::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<ExpressionASTnode> rval2 = Rval2::Parse();
     std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval1List = Rval1List::Parse();
     std::string binOp = std::get<0>(rval1List);
@@ -904,29 +927,45 @@ std::unique_ptr<ExpressionASTnode> Rval1::Parse() {
 
 // expr ::= IDENT "=" expr | rval_1
 std::unique_ptr<ExpressionASTnode> Expression::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing expr", CurTok.lexeme.c_str(), CurTok.type);
     std::string ident;
+    std::string binOp;
     std::unique_ptr<ExpressionASTnode> expression;
-    std::unique_ptr<ExpressionASTnode> rval1;
+    std::vector<std::unique_ptr<ExpressionASTnode>> args;
     if (CurTok.type == IDENT) {
-        std::string ident = CurTok.lexeme;
+        ident = CurTok.lexeme;
         getNextToken();
         if (CurTok.type == ASSIGN) {
-            expression = Expression::Parse();
+            getNextToken();
+            expression = std::move(Expression::Parse());
+        } else if (Rval1List::firstSet.contains(CurTok.type) ||
+                   Rval2List::firstSet.contains(CurTok.type) ||
+                   Rval3List::firstSet.contains(CurTok.type) ||
+                   Rval4List::firstSet.contains(CurTok.type) ||
+                   Rval5List::firstSet.contains(CurTok.type) ||
+                   Rval6List::firstSet.contains(CurTok.type)) {
+            binOp = CurTok.lexeme;
+            getNextToken();
+            expression = std::move(Rval1::Parse());
+        } else if (CurTok.type == LPAR) {
+            args = std::move(IdentBody::Parse());
         }
     } else {
-        rval1 = Rval1::Parse();
+        expression = std::move(Rval1::Parse());
     }
-    return std::make_unique<ExpressionASTnode>(std::move(ident), std::move(expression), std::move(rval1));
+    return std::make_unique<ExpressionASTnode>(std::move(ident), std::move(binOp), std::move(expression), std::move(args));
 }
 
 // expr_stmt ::= expr ";" | ";"
 struct ExpressionStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing expr stmt", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<ExpressionASTnode> expression;
         if (Expression::firstSet.contains(CurTok.type)) {
             expression = Expression::Parse();
         }
+        getNextToken();
         return expression;
     }
 };
@@ -936,6 +975,7 @@ TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_
 struct ReturnStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ReturnStatementASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing return", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         std::unique_ptr<ExpressionASTnode> expressionStatement = ExpressionStatement::Parse();
         return std::make_unique<ReturnStatementASTnode>(std::move(expressionStatement));
@@ -953,6 +993,7 @@ TokenSet Block::firstSet = TokenSet({LBRA});
 struct ElseStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ElseStatementASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing else", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<BlockASTnode> block;
         if (firstSet.contains(CurTok.type)) {
             getNextToken();
@@ -967,6 +1008,7 @@ TokenSet ElseStatement::firstSet = TokenSet({ELSE});
 struct IfStatement {
     static TokenSet firstSet;
     static std::unique_ptr<IfStatementASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing if", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         getNextToken();
         std::unique_ptr<ExpressionASTnode> expression = Expression::Parse();
@@ -977,23 +1019,23 @@ struct IfStatement {
     }
 };
 TokenSet IfStatement::firstSet = TokenSet({IF});
-
 struct Statement {
     static TokenSet firstSet;
     static std::unique_ptr<StatementASTnode> Parse();
 };
 TokenSet Statement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC, IF, WHILE, RETURN});
 
-// while_stmt ::= "while" "(" expr ")" stmt
+// while_stmt ::= "while" "(" expr ")" block
 struct WhileStatement {
     static TokenSet firstSet;
     static std::unique_ptr<WhileStatementASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing while", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         getNextToken();
         std::unique_ptr<ExpressionASTnode> expression = Expression::Parse();
         getNextToken();
-        std::unique_ptr<StatementASTnode> statement = Statement::Parse();
-        return std::make_unique<WhileStatementASTnode>(std::move(expression), std::move(statement));
+        std::unique_ptr<BlockASTnode> block = Block::Parse();
+        return std::make_unique<WhileStatementASTnode>(std::move(expression), std::move(block));
     }
 };
 TokenSet WhileStatement::firstSet = TokenSet({WHILE});
@@ -1003,6 +1045,7 @@ TokenSet WhileStatement::firstSet = TokenSet({WHILE});
 //      | while_stmt
 //      | if_stmt
 std::unique_ptr<StatementASTnode> Statement::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<StatementASTnode> statement;
     if (ReturnStatement::firstSet.contains(CurTok.type)) {
         statement = ReturnStatement::Parse();
@@ -1020,10 +1063,11 @@ std::unique_ptr<StatementASTnode> Statement::Parse() {
 struct StatementList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<StatementASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<StatementASTnode>> statements;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             statements.emplace_back(std::move(Statement::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        }
         return statements;
     }
 };
@@ -1033,10 +1077,11 @@ TokenSet StatementList::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, F
 struct LocalDeclaration {
     static TokenSet firstSet;
     static std::unique_ptr<LocalDeclarationASTnode> Parse() {
-        getNextToken();  // eat void.
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl", CurTok.lexeme.c_str(), CurTok.type);
         int type = CurTok.type;
         getNextToken();  // eat type.
         std::string ident = CurTok.lexeme;
+        getNextToken();
         getNextToken();
         return std::make_unique<LocalDeclarationASTnode>(std::move(type), std::move(ident));
     }
@@ -1047,10 +1092,11 @@ TokenSet LocalDeclaration::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct LocalDeclarationList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<LocalDeclarationASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             localDeclarations.emplace_back(std::move(LocalDeclaration::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        }
         return localDeclarations;
     }
 };
@@ -1058,6 +1104,7 @@ TokenSet LocalDeclarationList::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK
 
 // block ::= "{" local_decl_list stmt_list "}"
 std::unique_ptr<BlockASTnode> Block::Parse() {
+    fprintf(stderr, "%s: %s with type %d\n", "Parsing block", CurTok.lexeme.c_str(), CurTok.type);
     getNextToken();  // eat "{".
     std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations = LocalDeclarationList::Parse();
     std::vector<std::unique_ptr<StatementASTnode>> statements = StatementList::Parse();
@@ -1069,10 +1116,11 @@ std::unique_ptr<BlockASTnode> Block::Parse() {
 struct Param {
     static TokenSet firstSet;
     static std::unique_ptr<ParamASTnode> Parse() {
-        getNextToken();  // eat void.
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing param", CurTok.lexeme.c_str(), CurTok.type);
         int type = CurTok.type;
         getNextToken();  // eat type.
         std::string ident = CurTok.lexeme;
+        getNextToken();
         return std::make_unique<ParamASTnode>(std::move(type), std::move(ident));
     }
 };
@@ -1082,11 +1130,12 @@ TokenSet Param::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct ParamList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ParamASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing paramlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> paramList;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             getNextToken();
             paramList.emplace_back(std::move(Param::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        }
         return paramList;
     }
 };
@@ -1096,6 +1145,7 @@ TokenSet ParamList::firstSet = TokenSet({COMMA});
 struct Params {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ParamASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing params", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> params;
         if (Param::firstSet.contains(CurTok.type)) {
             params.emplace_back(std::move(Param::Parse()));
@@ -1111,6 +1161,7 @@ TokenSet Params::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct FunctionBody {
     static TokenSet firstSet;
     static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing func body", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         std::vector<std::unique_ptr<ParamASTnode>> params = Params::Parse();
         getNextToken();
@@ -1128,6 +1179,7 @@ TokenSet FunctionBody::firstSet = TokenSet({LPAR});
 struct DeclarationBody {
     static TokenSet firstSet;
     static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl body", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> functionBody;
         if (CurTok.type == SC) {
             getNextToken();
@@ -1142,12 +1194,14 @@ struct DeclarationBody {
 struct Declaration {
     static TokenSet firstSet;
     static std::unique_ptr<DeclarationASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> declarationBody;
         std::vector<std::unique_ptr<ParamASTnode>> params;
         std::unique_ptr<BlockASTnode> block;
         int type = CurTok.type;
         getNextToken();  // eat type.
         std::string ident = CurTok.lexeme;
+        getNextToken();
         if (type == VOID_TOK) {
             declarationBody = FunctionBody::Parse();
         } else {
@@ -1158,15 +1212,17 @@ struct Declaration {
         return std::make_unique<DeclarationASTnode>(std::move(type), std::move(ident), std::move(params), std::move(block));
     }
 };
+TokenSet Declaration::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 
 // decl_list ::= decl decl_list | epsilon
 struct DeclarationList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<DeclarationASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             declarationList.emplace_back(std::move(Declaration::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        }
         return declarationList;
     }
 };
@@ -1176,6 +1232,7 @@ TokenSet DeclarationList::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOO
 struct Extern {
     static TokenSet firstSet;
     static std::unique_ptr<ExternASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing extern", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();  // eat extern.
         int type = CurTok.type;
         getNextToken();  // eat type.
@@ -1183,19 +1240,22 @@ struct Extern {
         getNextToken();  // eat ident.
         getNextToken();
         std::vector<std::unique_ptr<ParamASTnode>> params = Params::Parse();
+        getNextToken();
+        getNextToken();
         return std::make_unique<ExternASTnode>(std::move(type), std::move(ident), std::move(params));
     }
 };
-TokenSet Declaration::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
+TokenSet Extern::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 
 // extern_list ::= extern extern_list | epsilon
 struct ExternList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExternASTnode>> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing externlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
-        do {
+        while (firstSet.contains(CurTok.type)) {
             externList.emplace_back(std::move(Extern::Parse()));
-        } while (firstSet.contains(CurTok.type));
+        };
 
         return externList;
     }
@@ -1206,14 +1266,16 @@ TokenSet ExternList::firstSet = TokenSet({EXTERN});
 struct Program {
     static TokenSet firstSet;
     static std::unique_ptr<ProgramASTnode> Parse() {
+        fprintf(stderr, "%s: %s with type %d\n", "Parsing program", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
         if (ExternList::firstSet.contains(CurTok.type)) {
             externList = std::move(ExternList::Parse());
         }
-        Declaration::Parse();
+        declarationList.emplace_back(std::move(Declaration::Parse()));
         if (DeclarationList::firstSet.contains(CurTok.type)) {
-            declarationList = std::move(DeclarationList::Parse());
+            std::vector<std::unique_ptr<DeclarationASTnode>> declarationListTail = std::move(DeclarationList::Parse());
+            std::move(declarationListTail.begin(), declarationListTail.end(), std::back_inserter(declarationList));
         }
         getNextToken();
         return std::make_unique<ProgramASTnode>(std ::move(externList), std::move(declarationList));
@@ -1224,35 +1286,10 @@ struct Program {
 // Recursive Descent Parser - Function call for each production
 //===----------------------------------------------------------------------===//
 
-/* Add function calls for each production */
 static std::unique_ptr<ProgramASTnode> Parser() {
     // fprintf(stderr, "ready> ");
     return std::move(Program::Parse());
 }
-
-// static void Parser() {
-//     while (true) {
-//         fprintf(stderr, "ready> ");
-//         switch (CurTok.type) {
-//             case EOF_TOK:
-//                 return;
-//             case SC:  // ignore top-level semicolons.
-//                 getNextToken();
-//                 break;
-//             case EXTERN:
-//                 HandleExtern();
-//             case INT_TOK:
-//             case FLOAT_TOK:
-//             case BOOL_TOK:
-//             case VOID_TOK:
-//                 HandleDeclaration();
-//                 break;
-//                 // default:
-//                 //     HandleTopLevelExpression();
-//                 //     break;
-//         }
-//     }
-// }
 
 //===----------------------------------------------------------------------===//
 // AST Printer
@@ -1271,16 +1308,6 @@ inline llvm::raw_ostream& operator<<(llvm::raw_ostream& os,
 static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
-
-//===----------------------------------------------------------------------===//
-// First Set
-//===----------------------------------------------------------------------===//
-
-static void defineFirstSets() {
-    // Program::firstSet = TokenSet({EXTERN, VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
-
-    // TokenSet type_spec::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
-}
 
 //===----------------------------------------------------------------------===//
 // Main driver code.
@@ -1312,12 +1339,12 @@ int main(int argc, char** argv) {
     // Make the module, which holds all the code.
     TheModule = std::make_unique<Module>("mini-c", TheContext);
 
-    defineFirstSets();
-
     // Run the parser now.
     std::unique_ptr<ProgramASTnode> programAST = Parser();
-    fprintf(stderr, "%s", programAST->toString().c_str());
     fprintf(stderr, "Parsing Finished\n");
+
+    fprintf(stderr, "%s\n", programAST->toString().c_str());
+    fprintf(stderr, "AST node printing Finished\n");
 
     //********************* Start printing final IR **************************
     // Print out all of the generated code into a file called output.ll

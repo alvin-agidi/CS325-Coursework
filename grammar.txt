@@ -30,7 +30,7 @@ stmt ::= expr_stmt
 
 expr_stmt ::= expr ";" | ";"
 
-while_stmt ::= "while" "(" expr ")" stmt 
+while_stmt ::= "while" "(" expr ")" block 
 
 if_stmt ::= "if" "(" expr ")" block else_stmt
 
@@ -148,7 +148,7 @@ FOLLOW(decl_list) = FOLLOW(program) = {}
 
 FOLLOW(params) = {")"}
 
-FOLLOW(block) = FOLLOW(func_body) + FIRST(else_stmt) + FOLLOW(if_stmt) + FOLLOW(else_stmt) = {"void", "int", "float", "bool", "else", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "if", "while", "return", "}"}
+FOLLOW(block) = FOLLOW(func_body) + FIRST(else_stmt) + FOLLOW(if_stmt) + FOLLOW(else_stmt) + FOLLOW(while_stmt) = {"void", "int", "float", "bool", "else", IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "if", "while", "return", "}"}
 
 FOLLOW(func_body) = FOLLOW(decl_body) + FOLLOW(decl) = {"void", "int", "float", "bool"}
 
