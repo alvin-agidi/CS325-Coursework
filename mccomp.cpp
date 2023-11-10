@@ -374,7 +374,7 @@ class ASTnode {
    public:
     ASTnode() {}
     virtual ~ASTnode() {}
-    // virtual Value* codegen() = 0;
+    virtual Value* codegen() = 0;
     virtual std::string toString() const { return ""; };
 };
 
@@ -397,7 +397,9 @@ class LocalDeclarationASTnode : public ASTnode {
    public:
     LocalDeclarationASTnode(){};
     LocalDeclarationASTnode(int type, std::string name) : type(type), name(name) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return std::to_string(type) + " " + name;
     };
@@ -410,7 +412,9 @@ class ParamASTnode : public ASTnode {
    public:
     ParamASTnode(){};
     ParamASTnode(int type, std::string name) : type(type), name(name) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return std::to_string(type) + " " + name;
     };
@@ -419,7 +423,9 @@ class ParamASTnode : public ASTnode {
 class StatementASTnode : public ASTnode {
    public:
     StatementASTnode(){};
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return "";
     };
@@ -441,7 +447,9 @@ class ExpressionASTnode : public StatementASTnode {
     ExpressionASTnode(std::unique_ptr<ExpressionASTnode> subExpression, std::string binOp, std::unique_ptr<ExpressionASTnode> subExpression2) : subExpression(std::move(subExpression)), binOp(binOp), subExpression2(std::move(subExpression2)) {}
     ExpressionASTnode(std::string name, std::string binOp, std::unique_ptr<ExpressionASTnode> subExpression, std::vector<std::unique_ptr<ExpressionASTnode>> args) : name(name), binOp(binOp), subExpression(std::move(subExpression)), args(std::move(args)) {}
     ExpressionASTnode(std::string op, std::unique_ptr<ExpressionASTnode> subExpression, std::string name, std::vector<std::unique_ptr<ExpressionASTnode>> args, std::string intVal, std::string floatVal, std::string boolVal) : op(op), subExpression(std::move(subExpression)), name(name), args(std::move(args)), intVal(intVal), floatVal(floatVal), boolVal(boolVal) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         std::string string = intVal + floatVal + boolVal + name;
         if (!args.empty()) {
@@ -469,7 +477,9 @@ class ReturnStatementASTnode : public StatementASTnode {
    public:
     ReturnStatementASTnode(){};
     ReturnStatementASTnode(std::unique_ptr<ExpressionASTnode> expression) : expression(std::move(expression)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return "return " + expression->toString();
     };
@@ -483,7 +493,9 @@ class BlockASTnode : public ASTnode {
     BlockASTnode(){};
     BlockASTnode(std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList,
                  std::vector<std::unique_ptr<StatementASTnode>> statementList) : localDeclarationList(std::move(localDeclarationList)), statementList(std::move(statementList)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return " { " + to_string(localDeclarationList) + " " + to_string(statementList) + " }";
     };
@@ -497,7 +509,9 @@ class WhileStatementASTnode : public StatementASTnode {
     WhileStatementASTnode(){};
     WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
                           std::unique_ptr<BlockASTnode> block) : expression(std::move(expression)), block(std::move(block)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return "while (" + expression->toString() + ")" + block->toString();
     };
@@ -509,7 +523,9 @@ class ElseStatementASTnode : public StatementASTnode {
    public:
     ElseStatementASTnode(){};
     ElseStatementASTnode(std::unique_ptr<BlockASTnode> block) : block(std::move(block)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return " else" + block->toString();
     };
@@ -525,7 +541,9 @@ class IfStatementASTnode : public StatementASTnode {
     IfStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
                        std::unique_ptr<BlockASTnode> block,
                        std::unique_ptr<ElseStatementASTnode> elseStatement) : expression(std::move(expression)), block(std::move(block)), elseStatement(std::move(elseStatement)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return "if (" + expression->toString() + ")" + block->toString() + elseStatement->toString();
     };
@@ -541,7 +559,9 @@ class DeclarationASTnode : public ASTnode {
     DeclarationASTnode(){};
     DeclarationASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList,
                        std::unique_ptr<BlockASTnode> block) : type(type), name(name), paramList(std::move(paramList)), block(std::move(block)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toString();
     };
@@ -555,7 +575,9 @@ class ExternASTnode : public ASTnode {
    public:
     ExternASTnode(){};
     ExternASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList) : type(type), name(name), paramList(std::move(paramList)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return "extern " + std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
     };
@@ -569,7 +591,9 @@ class ProgramASTnode : public ASTnode {
     ProgramASTnode(){};
     ProgramASTnode(std::vector<std::unique_ptr<ExternASTnode>> externList,
                    std::vector<std::unique_ptr<DeclarationASTnode>> declarationList) : externList(std::move(externList)), declarationList(std::move(declarationList)) {}
-    // virtual Value* codegen() override;
+    virtual Value* codegen() override {
+        return nullptr;
+    }
     virtual std::string toString() const override {
         return to_string(externList) + " " + to_string(declarationList);
     };
