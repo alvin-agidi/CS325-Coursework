@@ -2,3 +2,7 @@
 **/.tests/
 **/mccomp
 **/grammarnotes.txt
+**/firstsets.txt
+astnodes.cpp
+mccomp copy.cpp
+parser.cpp
