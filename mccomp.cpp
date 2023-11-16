@@ -1146,7 +1146,7 @@ TokenSet RvalTerm::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_
 
 struct Rval6List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval6List::firstSet = TokenSet({ASTERIX, DIV, MOD});
 
@@ -1156,33 +1156,34 @@ struct Rval6 {
 };
 TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_6_list ::= "*" rval_6 | "/" rval_6 | "%" rval_6 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval6List::parse() {
+// rval_6_list ::= "*" rval_term rval_6_list | "/" rval_term rval_6_list | "%" rval_term rval_6_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval6List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval6;
-    if (Rval6List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval6List;
+    while (Rval6List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval6 = Rval6::parse();
+        std::unique_ptr<ExpressionASTnode> rvalTerm = RvalTerm::parse();
+        rval6List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rvalTerm)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval6));
+    return std::move(rval6List);
 }
 
 // rval_6 ::= rval_term rval_6_list
 std::unique_ptr<ExpressionASTnode> Rval6::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rvalTerm = RvalTerm::parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval6List = Rval6List::parse();
-    std::string binOp = std::get<0>(rval6List);
-    if (binOp == "") return std::move(rvalTerm);
-    std::unique_ptr<ExpressionASTnode> rval6 = std::move(std::get<1>(rval6List));
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rvalTerm), std::move(binOp), std::move(rval6));
+    std::unique_ptr<ExpressionASTnode> root = RvalTerm::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval6List = Rval6List::parse();
+    for (auto it = rval6List.begin(); it != rval6List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 }
 
 struct Rval5List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval5List::firstSet = TokenSet({PLUS, MINUS});
 
@@ -1192,33 +1193,34 @@ struct Rval5 {
 };
 TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_5_list ::= "+" rval_5 | "-" rval_5 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval5List::parse() {
+// rval_5_list ::= "+" rval_6 rval_5_list | "-" rval_6 rval_5_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval5List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval5;
-    if (Rval5List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval5List;
+    while (Rval5List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval5 = Rval5::parse();
+        std::unique_ptr<ExpressionASTnode> rval6 = Rval6::parse();
+        rval5List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rval6)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval5));
+    return std::move(rval5List);
 }
 
 // rval_5 ::= rval_6 rval_5_list
 std::unique_ptr<ExpressionASTnode> Rval5::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval6 = Rval6::parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval5List = Rval5List::parse();
-    std::string binOp = std::get<0>(rval5List);
-    if (binOp == "") return std::move(rval6);
-    std::unique_ptr<ExpressionASTnode> rval5 = std::move(std::get<1>(rval5List));
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rval6), std::move(binOp), std::move(rval5));
+    std::unique_ptr<ExpressionASTnode> root = Rval6::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval5List = Rval5List::parse();
+    for (auto it = rval5List.begin(); it != rval5List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 }
 
 struct Rval4List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval4List::firstSet = TokenSet({LT, LE, GT, GE});
 
@@ -1228,33 +1230,34 @@ struct Rval4 {
 };
 TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | "=" rval_4 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval4List::parse() {
+// rval_4_list ::= "<" rval_5 rval_4_list | "<=" rval_5 rval_4_list | ">" rrval_5 rval_4_list | "=" rval_5 rval_4_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval4List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval4;
-    if (Rval4List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval4List;
+    while (Rval4List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval4 = Rval4::parse();
+        std::unique_ptr<ExpressionASTnode> rval5 = Rval5::parse();
+        rval4List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rval5)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval4));
+    return std::move(rval4List);
 }
 
 // rval_4 ::= rval_5 rval_4_list
 std::unique_ptr<ExpressionASTnode> Rval4::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval5 = Rval5::parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval4List = Rval4List::parse();
-    std::string binOp = std::get<0>(rval4List);
-    std::unique_ptr<ExpressionASTnode> rval4 = std::move(std::get<1>(rval4List));
-    if (binOp == "") return std::move(rval5);
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rval5), std::move(binOp), std::move(rval4));
+    std::unique_ptr<ExpressionASTnode> root = Rval5::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval4List = Rval4List::parse();
+    for (auto it = rval4List.begin(); it != rval4List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 }
 
 struct Rval3List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval3List::firstSet = TokenSet({EQ, NE});
 
@@ -1264,33 +1267,34 @@ struct Rval3 {
 };
 TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_3_list ::= "==" rval_3 | "!=" rval_3 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval3List::parse() {
+// rval_3_list ::= "==" rval_4 rval_3_list | "!=" rval_4 rval_3_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval3List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval3;
-    if (Rval3List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval3List;
+    while (Rval3List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval3 = Rval3::parse();
+        std::unique_ptr<ExpressionASTnode> rval4 = Rval4::parse();
+        rval3List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rval4)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval3));
+    return std::move(rval3List);
 }
 
 // rval_3 ::= rval_4 rval_3_list
 std::unique_ptr<ExpressionASTnode> Rval3::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval4 = Rval4::parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval3List = Rval3List::parse();
-    std::string binOp = std::get<0>(rval3List);
-    if (binOp == "") return std::move(rval4);
-    std::unique_ptr<ExpressionASTnode> rval3 = std::move(std::get<1>(rval3List));
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rval4), std::move(binOp), std::move(rval3));
+    std::unique_ptr<ExpressionASTnode> root = Rval4::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval3List = Rval3List::parse();
+    for (auto it = rval3List.begin(); it != rval3List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 }
 
 struct Rval2List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval2List::firstSet = TokenSet({AND});
 
@@ -1300,33 +1304,34 @@ struct Rval2 {
 };
 TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_2_list ::= "&&" rval_2 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval2List::parse() {
+// rval_2_list ::= "&&" rval_3 rval_2_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval2List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval2;
-    if (Rval2List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval2List;
+    while (Rval2List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval2 = Rval2::parse();
+        std::unique_ptr<ExpressionASTnode> rval3 = Rval3::parse();
+        rval2List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rval3)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval2));
+    return std::move(rval2List);
 }
 
 // rval_2 ::= rval_3 rval_2_list
 std::unique_ptr<ExpressionASTnode> Rval2::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval3 = std::move(Rval3::parse());
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval2List = Rval2List::parse();
-    std::string binOp = std::get<0>(rval2List);
-    if (binOp == "") return std::move(rval3);
-    std::unique_ptr<ExpressionASTnode> rval2 = std::move(std::get<1>(rval2List));
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rval3), std::move(binOp), std::move(rval2));
+    std::unique_ptr<ExpressionASTnode> root = Rval3::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval2List = Rval2List::parse();
+    for (auto it = rval2List.begin(); it != rval2List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 }
 
 struct Rval1List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
+    static std::vector<std::unique_ptr<BinaryExpressionASTnode>> parse();
 };
 TokenSet Rval1List::firstSet = TokenSet({OR});
 
@@ -1336,28 +1341,29 @@ struct Rval1 {
 };
 TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
-// rval_1_list ::= "||" rval_1 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval1List::parse() {
+// rval_1_list ::= "||" rval_2 rval_1_list | epsilon
+std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval1List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1list", CurTok.lexeme.c_str(), CurTok.type);
-    std::string binOp;
-    std::unique_ptr<ExpressionASTnode> rval1;
-    if (Rval1List::firstSet.contains(CurTok.type)) {
-        binOp = CurTok.lexeme;
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval1List;
+    while (Rval1List::firstSet.contains(CurTok.type)) {
+        std::string binOp = CurTok.lexeme;
         getNextToken();
-        rval1 = Rval1::parse();
+        std::unique_ptr<ExpressionASTnode> rval2 = Rval2::parse();
+        rval1List.emplace_back(std::make_unique<BinaryExpressionASTnode>(nullptr, binOp, std::move(rval2)));
     }
-    return std::make_tuple(std::move(binOp), std::move(rval1));
+    return std::move(rval1List);
 };
 
 // rval_1 ::= rval_2 rval_1_list
 std::unique_ptr<ExpressionASTnode> Rval1::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval2 = Rval2::parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval1List = Rval1List::parse();
-    std::string binOp = std::get<0>(rval1List);
-    if (binOp == "") return std::move(rval2);
-    std::unique_ptr<ExpressionASTnode> rval1 = std::move(std::get<1>(rval1List));
-    return std::make_unique<BinaryExpressionASTnode>(std::move(rval2), std::move(binOp), std::move(rval1));
+    std::unique_ptr<ExpressionASTnode> root = Rval2::parse();
+    std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval1List = Rval1List::parse();
+    for (auto it = rval1List.begin(); it != rval1List.end(); ++it) {
+        (*it)->LHSexpression = std::move(root);
+        root = std::move(*it);
+    }
+    return std::move(root);
 };
 
 // expr ::= IDENT "=" expr | rval_1
