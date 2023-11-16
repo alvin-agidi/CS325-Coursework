@@ -21,6 +21,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
@@ -91,7 +92,7 @@ enum TOKEN_TYPE {
     MOD = int('%'),      // modular
     NOT = int('!'),      // unary negation
 
-    // comparison operators
+    // compValarison operators
     EQ = -19,       // equal
     NE = -20,       // not equal
     LE = -21,       // less than or equal to
@@ -371,359 +372,57 @@ static TOKEN gettok() {
 static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
+// static std::map<std::string, Value*> GlobalNamedValues;
+static std::map<std::string, AllocaInst*> NamedValues;
 
-//===----------------------------------------------------------------------===//
-// AST nodes
-//===----------------------------------------------------------------------===//
+static std ::map<int, Type*> TypeMap{
+    {INT_TOK, Type::getInt32Ty(TheContext)},
+    {FLOAT_TOK, Type::getFloatTy(TheContext)},
+    {BOOL_TOK, Type::getInt1Ty(TheContext)},
+    {VOID_TOK, Type::getVoidTy(TheContext)}};
 
-// ASTnode - Base class for all AST nodes.
-class ASTnode {
-   public:
-    ASTnode() {}
-    virtual ~ASTnode() {}
-    virtual Value* codegen() = 0;
-    virtual std::string toFormattedString() const { return ""; };
-    virtual std::string toString(std::string offset) const { return ""; };
-};
-
-// template <typename ASTnode>
-// std::string to_string(const std::vector<ASTnode>& list, std::string delimiter = " ") {
-//     std::string result;
-//     for (auto& astNode : list) {
-//         result += (*astNode).toString()+ delimiter;
-//     }
-//     if (!list.empty()) {
-//         result.erase(result.length() - delimiter.length());
-//     }
-//     return std::move(result);
-// }
-
-template <typename ASTnode>
-std::string to_string(const std::vector<ASTnode>& list, std::string delimiter = "") {
-    std::string result;
-    for (auto& astNode : list) {
-        result += (*astNode).toString(delimiter) + "\n";
+static Type* getMaxType(Value* val1, Value* val2) {
+    if (val1->getType()->isFloatTy() || val2->getType()->isFloatTy()) {
+        return Type::getFloatTy(TheContext);
+    } else if (val1->getType() == Type::getInt32Ty(TheContext) || val2->getType() == Type::getInt32Ty(TheContext)) {
+        return Type::getInt32Ty(TheContext);
     }
-    if (!list.empty()) {
-        result.erase(result.length() - 1);
-    }
-    return std::move(result);
+    return Type::getInt1Ty(TheContext);
 }
 
-static std::string incrementOffset(std::string offset) {
-    return offset + "\t";
-};
-
-static std::string branch = "|-------";
-
-class ParamASTnode : public ASTnode {
-    int type;
-    std::string name;
-
-   public:
-    ParamASTnode(){};
-    ParamASTnode(int type, std::string name) : type(type), name(name) {}
-    virtual Value* codegen() override {
-        return nullptr;
+static Value* demoteFloat(Value* val, Type* type) {
+    if (type == TypeMap.at(INT_TOK)) {
+        return Builder.CreateFPToSI(val, Type::getInt32Ty(TheContext), "toInt");
+    } else if (type == TypeMap.at(BOOL_TOK)) {
+        return Builder.CreateFPToSI(val, Type::getInt1Ty(TheContext), "toBool");
     }
-    virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name;
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Param " + std::to_string(type) + " " + name;
-    };
+    return val;
 };
 
-class LocalDeclarationASTnode : public ASTnode {
-    int type;
-    std::string name;
-
-   public:
-    LocalDeclarationASTnode(){};
-    LocalDeclarationASTnode(int type, std::string name) : type(type), name(name) {}
-    virtual Value* codegen() override {
-        return nullptr;
+static std::tuple<Value*, Value*> promoteToFP(Value* val1, Value* val2) {
+    if (!val1->getType()->isFloatTy()) {
+        val1 = Builder.CreateUIToFP(val1, Type::getFloatTy(TheContext));
     }
-    virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name;
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Local Declaration " + std::to_string(type) + " " + name;
-    };
-};
-
-class StatementASTnode : public ASTnode {
-   public:
-    StatementASTnode(){};
-    virtual Value* codegen() override {
-        return nullptr;
+    if (!val2->getType()->isFloatTy()) {
+        val2 = Builder.CreateUIToFP(val2, Type::getFloatTy(TheContext));
     }
-    virtual std::string toFormattedString() const override {
-        return "";
-    };
-    virtual std::string toString(std::string offset) const override {
-        return "";
-    };
+    return std::make_tuple(val1, val2);
 };
 
-class ExpressionASTnode : public ASTnode {
-    std::string binOp;
-    std::string op;
-    std::unique_ptr<ExpressionASTnode> subExpression;
-    std::unique_ptr<ExpressionASTnode> subExpression2;
-    std::string name;
-    std::vector<std::unique_ptr<ExpressionASTnode>> args;
-    std::string intVal;
-    std::string floatVal;
-    std::string boolVal;
-
-   public:
-    ExpressionASTnode(){};
-    ExpressionASTnode(std::unique_ptr<ExpressionASTnode> subExpression,
-                      std::string binOp,
-                      std::unique_ptr<ExpressionASTnode> subExpression2) : subExpression(std::move(subExpression)), binOp(binOp), subExpression2(std::move(subExpression2)) {}
-    ExpressionASTnode(std::string name,
-                      std::unique_ptr<ExpressionASTnode> subExpression) : name(name), subExpression(std::move(subExpression)) {}
-    ExpressionASTnode(std::string op,
-                      std::unique_ptr<ExpressionASTnode> subExpression,
-                      std::string name,
-                      std::vector<std::unique_ptr<ExpressionASTnode>> args,
-                      std::string intVal,
-                      std::string floatVal,
-                      std::string boolVal) : op(op), subExpression(std::move(subExpression)), name(name), args(std::move(args)), intVal(intVal), floatVal(floatVal), boolVal(boolVal) {}
-    virtual Value* codegen() override {
-        if (intVal != "") {
-            return ConstantInt::get(TheContext, APInt(32, std::stoi(intVal), true));
-        } else if (floatVal != "") {
-            return ConstantFP::get(TheContext, APFloat(std::stof(floatVal)));
-        } else if (boolVal != "") {
-            return ConstantInt::get(TheContext, APInt(32, boolVal == "true", true));
-        }
+static Value* promoteToFP(Value* val) {
+    if (!val->getType()->isFloatTy()) {
+        val = Builder.CreateUIToFP(val, Type::getFloatTy(TheContext));
     }
-    virtual std::string toFormattedString() const override {
-        std::string string = intVal + floatVal + boolVal + name;
-        if (!args.empty()) {
-            string += "(" + to_string(args, ", ") + ")";
-        }
-        if (name != "" && binOp == "" && subExpression) {
-            string += "=";
-        } else {
-            string += binOp;
-        }
-        if (subExpression) {
-            string += op + subExpression->toFormattedString();
-        };
-        if (subExpression2) {
-            string += binOp + subExpression2->toFormattedString();
-        }
-        return string;
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Expression";
-    };
+    return val;
 };
 
-class ExpressionStatementASTnode : public StatementASTnode {
-    std::unique_ptr<ExpressionASTnode> expression;
+static AllocaInst* CreateEntryBlockAlloca(Function* func, Type* type, const std::string& varName) {
+    IRBuilder<> TmpB(&func->getEntryBlock(), func->getEntryBlock().begin());
+    return TmpB.CreateAlloca(type, 0, varName.c_str());
+}
 
-   public:
-    ExpressionStatementASTnode(){};
-    ExpressionStatementASTnode(std::unique_ptr<ExpressionASTnode> expression) : expression(std::move(expression)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return expression->toFormattedString() + ";";
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Expression Statement\n" +
-               expression->toString(incOffset);
-    };
-};
-
-class ReturnStatementASTnode : public StatementASTnode {
-    std::unique_ptr<ExpressionStatementASTnode> expressionStatement;
-
-   public:
-    ReturnStatementASTnode(){};
-    ReturnStatementASTnode(std::unique_ptr<ExpressionStatementASTnode> expressionStatement) : expressionStatement(std::move(expressionStatement)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return "return " + expressionStatement->toFormattedString();
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Return\n" +
-               expressionStatement->toString(incOffset);
-    };
-};
-
-class BlockASTnode : public StatementASTnode {
-    std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList;
-    std::vector<std::unique_ptr<StatementASTnode>> statementList;
-
-   public:
-    BlockASTnode(){};
-    BlockASTnode(std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList,
-                 std::vector<std::unique_ptr<StatementASTnode>> statementList) : localDeclarationList(std::move(localDeclarationList)), statementList(std::move(statementList)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return " { " + to_string(localDeclarationList) + " " + to_string(statementList) + " }";
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        std::string string;
-        string += offset + branch + "Block\n" + string += to_string(localDeclarationList, incOffset);
-        if (!localDeclarationList.empty()) string += "\n";
-        string += to_string(statementList, incOffset);
-        return string;
-    };
-};
-
-class WhileStatementASTnode : public StatementASTnode {
-    std::unique_ptr<ExpressionASTnode> expression;
-    std::unique_ptr<BlockASTnode> block;
-
-   public:
-    WhileStatementASTnode(){};
-    WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
-                          std::unique_ptr<BlockASTnode> block) : expression(std::move(expression)), block(std::move(block)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return "while (" + expression->toFormattedString() + ")" + block->toFormattedString();
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "While Statement\n" +
-               expression->toString(incOffset) + "\n" +
-               block->toString(incOffset);
-    };
-};
-
-class ElseStatementASTnode : public StatementASTnode {
-    std::unique_ptr<BlockASTnode> block;
-
-   public:
-    ElseStatementASTnode(){};
-    ElseStatementASTnode(std::unique_ptr<BlockASTnode> block) : block(std::move(block)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return " else" + block->toFormattedString();
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Else Statement\n" +
-               block->toString(incOffset);
-    };
-};
-
-class IfStatementASTnode : public StatementASTnode {
-    std::unique_ptr<ExpressionASTnode> expression;
-    std::unique_ptr<BlockASTnode> block;
-    std::unique_ptr<ElseStatementASTnode> elseStatement;
-
-   public:
-    IfStatementASTnode(){};
-    IfStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
-                       std::unique_ptr<BlockASTnode> block,
-                       std::unique_ptr<ElseStatementASTnode> elseStatement) : expression(std::move(expression)), block(std::move(block)), elseStatement(std::move(elseStatement)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return "if (" + expression->toFormattedString() + ")" + block->toFormattedString() + elseStatement->toFormattedString();
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "If Statement\n" +
-               expression->toString(incOffset) + "\n" +
-               block->toString(incOffset) + "\n" +
-               elseStatement->toString(offset);
-    };
-};
-
-class DeclarationASTnode : public ASTnode {
-    int type;
-    std::string name;
-    std::vector<std::unique_ptr<ParamASTnode>> paramList;
-    std::unique_ptr<BlockASTnode> block;
-
-   public:
-    DeclarationASTnode(){};
-    DeclarationASTnode(int type,
-                       std::string name,
-                       std::vector<std::unique_ptr<ParamASTnode>> paramList,
-                       std::unique_ptr<BlockASTnode> block) : type(type), name(name), paramList(std::move(paramList)), block(std::move(block)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toFormattedString();
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Declaration " + std::to_string(type) + " " + name + "\n" +
-               to_string(paramList, incOffset) + "\n" +
-               block->toString(incOffset);
-    };
-};
-
-class ExternASTnode : public ASTnode {
-    int type;
-    std::string name;
-    std::vector<std::unique_ptr<ParamASTnode>> paramList;
-
-   public:
-    ExternASTnode(){};
-    ExternASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList) : type(type), name(name), paramList(std::move(paramList)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return "extern " + std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
-    };
-    virtual std::string toString(std::string offset) const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Extern " + std::to_string(type) + " " + name + "\n" +
-               to_string(paramList, incOffset);
-    };
-};
-
-class ProgramASTnode : public ASTnode {
-    std::vector<std::unique_ptr<ExternASTnode>> externList;
-    std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
-
-   public:
-    ProgramASTnode(){};
-    ProgramASTnode(std::vector<std::unique_ptr<ExternASTnode>> externList,
-                   std::vector<std::unique_ptr<DeclarationASTnode>> declarationList) : externList(std::move(externList)), declarationList(std::move(declarationList)) {}
-    virtual Value* codegen() override {
-        return nullptr;
-    }
-    virtual std::string toFormattedString() const override {
-        return to_string(externList) + " " + to_string(declarationList);
-    };
-    virtual std::string toString(std::string offset = "") const override {
-        std::string incOffset = incrementOffset(offset);
-        return offset + "Program\n" +
-               to_string(externList, offset) + "\n" +
-               to_string(declarationList, offset);
-    };
-};
 //===----------------------------------------------------------------------===//
-// Parser
+// Lexer
 //===----------------------------------------------------------------------===//
 
 // CurTok/getNextToken - Provide a simple token buffer.  CurTok is the current
@@ -747,31 +446,608 @@ static void putBackToken(TOKEN tok) {
     tok_buffer.push_front(tok);
 }
 
-// LogError* - These are little helper functions for error handling.
-void LogError(const char* Str) {
-    fprintf(stderr, "Error: %s\n", Str);
+//===----------------------------------------------------------------------===//
+// AST nodes
+//===----------------------------------------------------------------------===//
+
+// ASTnode - Base class for all AST nodes.
+struct ASTnode {
+    int lineNo = CurTok.lineNo;
+    ASTnode() {}
+    virtual ~ASTnode() {}
+    virtual Value* codeGen() = 0;
+    virtual std::string toFormattedString() const { return ""; };
+    virtual std::string toString(std::string offset) const { return ""; };
+};
+
+//===----------------------------------------------------------------------===//
+// Error Logging
+//===----------------------------------------------------------------------===//
+// logError* - These are little helper functions for error handling.
+void logError(std::string Str) {
+    fprintf(stderr, "Error: %s\n", Str.c_str());
 }
 
-std::unique_ptr<ASTnode> LogErrorP(const char* Str) {
-    LogError(Str);
+std::unique_ptr<ASTnode> logErrorNode(std::string Str) {
+    logError(Str);
     return nullptr;
 }
 
+Value* logErrorValue(std::string Str) {
+    logError(Str);
+    return nullptr;
+}
+
+template <typename ASTnode>
+std::string to_string(const std::vector<ASTnode>& list, std::string delimiter = "") {
+    std::string result;
+    for (auto& astNode : list) {
+        result += (*astNode).toString(delimiter) + "\n";
+    }
+    if (!list.empty()) {
+        result.erase(result.length() - 1);
+    }
+    return std::move(result);
+}
+
+static std::string incrementOffset(std::string offset) {
+    return offset + "\t";
+};
+
+static std::string branch = "|-------";
+
+struct ParamASTnode : public ASTnode {
+    int type;
+    std::string name;
+
+    ParamASTnode(){};
+    ParamASTnode(int type, std::string name) : type(type), name(name) {}
+    virtual Value* codeGen() override {
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return std::to_string(type) + " " + name;
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Param " + std::to_string(type) + " " + name;
+    };
+};
+
+struct LocalDeclarationASTnode : public ASTnode {
+    int type;
+    std::string name;
+
+    LocalDeclarationASTnode(){};
+    LocalDeclarationASTnode(int type, std::string name) : type(type), name(name) {}
+    virtual Value* codeGen() override {
+        AllocaInst* alloca = Builder.CreateAlloca(TypeMap.at(type), nullptr, name);
+        NamedValues[name] = alloca;
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return std::to_string(type) + " " + name;
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Local Declaration " + std::to_string(type) + " " + name;
+    };
+};
+
+struct StatementASTnode : public ASTnode {
+    StatementASTnode(){};
+    virtual Value* codeGen() = 0;
+    virtual std::string toFormattedString() const { return ""; };
+    virtual std::string toString(std::string offset) const { return ""; };
+};
+
+struct ExpressionASTnode : public StatementASTnode {
+    ExpressionASTnode(){};
+    virtual Value* codeGen() = 0;
+    virtual std::string toFormattedString() const { return ""; };
+    virtual std::string toString(std::string offset) const { return ""; };
+};
+
+struct BinaryExpressionASTnode : public ExpressionASTnode {
+    std::string binOp;
+    std::unique_ptr<ExpressionASTnode> LHSexpression;
+    std::unique_ptr<ExpressionASTnode> RHSexpression;
+
+    BinaryExpressionASTnode(){};
+    BinaryExpressionASTnode(std::unique_ptr<ExpressionASTnode> LHSexpression,
+                            std::string binOp,
+                            std::unique_ptr<ExpressionASTnode> RHSexpression) : LHSexpression(std::move(LHSexpression)), binOp(binOp), RHSexpression(std::move(RHSexpression)) {}
+    virtual Value* codeGen() override {
+        Value* LHSval = LHSexpression->codeGen();
+        Value* RHSval = RHSexpression->codeGen();
+        Type* maxType = getMaxType(LHSval, RHSval);
+        if (!LHSval || !RHSval) return nullptr;
+        std::tie(LHSval, RHSval) = promoteToFP(LHSval, RHSval);
+        Value* resVal;
+
+        if (binOp == "||") {
+            Value* LHS = Builder.CreateFCmpUNE(LHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
+            Value* RHS = Builder.CreateFCmpUNE(RHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
+            resVal = Builder.CreateOr(LHS, RHS, "orTmp");
+        } else if (binOp == "&&") {
+            Value* LHS = Builder.CreateFCmpUNE(LHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
+            Value* RHS = Builder.CreateFCmpUNE(RHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
+            resVal = Builder.CreateAnd(LHS, RHS, "andTmp");
+        } else if (binOp == "==") {
+            return Builder.CreateFCmpUEQ(LHSval, RHSval, "eqTmp");
+        } else if (binOp == "!=") {
+            return Builder.CreateFCmpUNE(LHSval, RHSval, "neTmp");
+        } else if (binOp == "<") {
+            return Builder.CreateFCmpULT(LHSval, RHSval, "ltTmp");
+        } else if (binOp == "<=") {
+            return Builder.CreateFCmpULE(LHSval, RHSval, "leTmp");
+        } else if (binOp == ">") {
+            return Builder.CreateFCmpUGT(LHSval, RHSval, "gtTmp");
+        } else if (binOp == ">=") {
+            return Builder.CreateFCmpUGE(LHSval, RHSval, "GETmp");
+        } else if (binOp == "+") {
+            resVal = Builder.CreateFAdd(LHSval, RHSval, "addTmp");
+        } else if (binOp == "-") {
+            resVal = Builder.CreateFSub(LHSval, RHSval, "subTmp");
+        } else if (binOp == "*") {
+            resVal = Builder.CreateFMul(LHSval, RHSval, "mulTmp");
+        } else if (binOp == "/") {
+            resVal = Builder.CreateFDiv(LHSval, RHSval, "divTmp");
+        } else if (binOp == "%") {
+            resVal = Builder.CreateFRem(LHSval, RHSval, "modTmp");
+        } else {
+            return logErrorValue("Invalid binary operator: " + binOp);
+        }
+        return demoteFloat(resVal, maxType);
+    }
+    virtual std::string toFormattedString() const override {
+        return LHSexpression->toFormattedString() + binOp + RHSexpression->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Binary Expression " + binOp + "\n" +
+               LHSexpression->toString(incOffset) + "\n" +
+               RHSexpression->toString(incOffset);
+    }
+};
+
+struct UnaryExpressionASTnode : public ExpressionASTnode {
+    std::string op;
+    std::unique_ptr<ExpressionASTnode> subExpression;
+
+    UnaryExpressionASTnode(){};
+    UnaryExpressionASTnode(std::string op, std::unique_ptr<ExpressionASTnode> subExpression) : op(op), subExpression(std::move(subExpression)) {}
+    virtual Value* codeGen() override {
+        Value* val = subExpression->codeGen();
+        if (!val) return nullptr;
+        val = promoteToFP(val);
+
+        if (op == "-") {
+            return Builder.CreateFNeg(val, "negTmp");
+        } else if (op == "!") {
+            return Builder.CreateFCmpUEQ(val, ConstantFP::get(TheContext, APFloat(0.0f)), "notTmp");
+        }
+        return logErrorValue("invalid operator: " + op);
+    }
+    virtual std::string toFormattedString() const override {
+        return op + subExpression->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Unary Expression " + op + "\n" + subExpression->toString(incOffset);
+    };
+};
+
+struct VariableASTnode : public ExpressionASTnode {
+    std::string name;
+
+    VariableASTnode(){};
+    VariableASTnode(std::string name) : name(name) {}
+    virtual Value* codeGen() override {
+        AllocaInst* val = NamedValues[name];
+        if (!val) return logErrorValue("Unknown variable: " + name);
+        return Builder.CreateLoad(val->getAllocatedType(), val, name);
+    }
+    virtual std::string toFormattedString() const override {
+        return name;
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Variable " + name;
+    };
+};
+
+struct FunctionCallASTnode : public ExpressionASTnode {
+    std::string name;
+    std::vector<std::unique_ptr<ExpressionASTnode>> args;
+
+    FunctionCallASTnode(){};
+    FunctionCallASTnode(std::string name,
+                        std::vector<std::unique_ptr<ExpressionASTnode>> args) : name(name), args(std::move(args)) {}
+    virtual Value* codeGen() override {
+        Function* func = TheModule->getFunction(name);
+        if (!func)
+            return logErrorValue("Unknown function: " + name + " (line " + std::to_string(lineNo) + ")");
+
+        if (func->arg_size() != args.size())
+            return logErrorValue("Incorrect number of arguments: " + std::to_string(func->arg_size()) + " expected, " + std::to_string(args.size()) + " given");
+
+        std::vector<Value*> argVals;
+        for (std::unique_ptr<ExpressionASTnode>& arg : args) {
+            argVals.push_back(arg->codeGen());
+            if (!argVals.back()) return nullptr;
+        }
+        return Builder.CreateCall(func, argVals, "callTmp");
+    }
+    virtual std::string toFormattedString() const override {
+        return name + "(" + to_string(args, ", ") + ")";
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        std::string string = offset + branch + "Function Call " + name;
+        if (!args.empty()) string += "\n " + to_string(args, incOffset);
+        return string;
+    };
+};
+
+struct LiteralASTnode : public ExpressionASTnode {
+    std::string intLit;
+    std::string floatLit;
+    std::string boolLit;
+
+    LiteralASTnode(){};
+    LiteralASTnode(std::string intLit,
+                   std::string floatLit,
+                   std::string boolLit) : intLit(intLit), floatLit(floatLit), boolLit(boolLit) {}
+    virtual Value* codeGen() override {
+        if (intLit != "") {
+            return ConstantInt::get(TheContext, APInt(32, std::stoi(intLit), true));
+        } else if (floatLit != "") {
+            return ConstantFP::get(TheContext, APFloat(std::stof(floatLit)));
+        } else if (boolLit != "") {
+            return ConstantInt::get(TheContext, APInt(1, boolLit == "true", true));
+        }
+        return logErrorValue("Invalid literal");
+    }
+    virtual std::string toFormattedString() const override {
+        return intLit + floatLit + boolLit;
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Literal " + intLit + floatLit + boolLit;
+    };
+};
+
+struct AssignmentExpressionASTnode : public ExpressionASTnode {
+    std::string name;
+    std::unique_ptr<ExpressionASTnode> subExpression;
+
+    AssignmentExpressionASTnode(){};
+    AssignmentExpressionASTnode(std::string name,
+                                std::unique_ptr<ExpressionASTnode> subExpression) : name(name), subExpression(std::move(subExpression)) {}
+    virtual Value* codeGen() override {
+        Value* var = NamedValues[name];
+        if (!var) return logErrorValue("Unknown variable name: " + name);
+
+        Value* val = subExpression->codeGen();
+        if (!val) return nullptr;
+
+        Builder.CreateStore(val, var);
+        return val;
+    }
+    virtual std::string toFormattedString() const override {
+        return name + "=" + subExpression->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Assignment Expression " + name + " =\n" +
+               subExpression->toString(incOffset);
+    };
+};
+
+struct ReturnStatementASTnode : public StatementASTnode {
+    std::unique_ptr<ExpressionASTnode> expression;
+
+    ReturnStatementASTnode(){};
+    ReturnStatementASTnode(std::unique_ptr<ExpressionASTnode> expression) : expression(std::move(expression)) {}
+    virtual Value* codeGen() override {
+        if (expression) {
+            Value* val = expression->codeGen();
+            return Builder.CreateRet(val);
+        }
+        return Builder.CreateRetVoid();
+    }
+    virtual std::string toFormattedString() const override {
+        return "return " + expression->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        std::string string = offset + branch + "Return";
+        if (expression) {
+            string += "\n" + expression->toString(incOffset);
+        }
+        return string;
+    };
+};
+
+struct BlockASTnode : public StatementASTnode {
+    std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList;
+    std::vector<std::unique_ptr<StatementASTnode>> statementList;
+
+    BlockASTnode(){};
+    BlockASTnode(std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList,
+                 std::vector<std::unique_ptr<StatementASTnode>> statementList) : localDeclarationList(std::move(localDeclarationList)), statementList(std::move(statementList)) {}
+    virtual Value* codeGen() override {
+        for (std::unique_ptr<LocalDeclarationASTnode>& localDecl : localDeclarationList) {
+            localDecl->codeGen();
+        }
+        for (std::unique_ptr<StatementASTnode>& stmt : statementList) {
+            stmt->codeGen();
+        }
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return " { " + to_string(localDeclarationList) + " " + to_string(statementList) + " }";
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        std::string string;
+        string += offset + branch + "Block\n" + string += to_string(localDeclarationList, incOffset);
+        if (!localDeclarationList.empty()) string += "\n";
+        string += to_string(statementList, incOffset);
+        return string;
+    };
+};
+
+struct WhileStatementASTnode : public StatementASTnode {
+    std::unique_ptr<ExpressionASTnode> expression;
+    std::unique_ptr<StatementASTnode> statement;
+
+    WhileStatementASTnode(){};
+    WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
+                          std::unique_ptr<StatementASTnode> statement) : expression(std::move(expression)), statement(std::move(statement)) {}
+    virtual Value* codeGen() override {
+        Function* func = Builder.GetInsertBlock()->getParent();
+        BasicBlock* trueBB = BasicBlock::Create(TheContext, "whileTrue", func);
+        BasicBlock* endBB = BasicBlock::Create(TheContext, "endWhile", func);
+        Value* condVal = expression->codeGen();
+        if (!condVal) return nullptr;
+        condVal = promoteToFP(condVal);
+        Value* compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "whileCond");
+        Builder.CreateCondBr(compVal, trueBB, endBB);
+        Builder.SetInsertPoint(trueBB);
+        Value* trueVal = statement->codeGen();
+        condVal = expression->codeGen();
+        if (!condVal) return nullptr;
+        condVal = promoteToFP(condVal);
+        compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "whileCond");
+        Builder.CreateCondBr(compVal, trueBB, endBB);
+        trueBB = Builder.GetInsertBlock();
+        Builder.SetInsertPoint(endBB);
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return "while (" + expression->toFormattedString() + ")" + statement->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "While Statement\n" +
+               expression->toString(incOffset) + "\n" +
+               statement->toString(incOffset);
+    };
+};
+
+struct ElseStatementASTnode : public StatementASTnode {
+    std::unique_ptr<BlockASTnode> block;
+
+    ElseStatementASTnode(){};
+    ElseStatementASTnode(std::unique_ptr<BlockASTnode> block) : block(std::move(block)) {}
+    virtual Value* codeGen() override {
+        return block->codeGen();
+    }
+    virtual std::string toFormattedString() const override {
+        return " else" + block->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Else Statement\n" +
+               block->toString(incOffset);
+    };
+};
+
+struct IfStatementASTnode : public StatementASTnode {
+    std::unique_ptr<ExpressionASTnode> expression;
+    std::unique_ptr<BlockASTnode> block;
+    std::unique_ptr<ElseStatementASTnode> elseStatement;
+
+    IfStatementASTnode(){};
+    IfStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
+                       std::unique_ptr<BlockASTnode> block,
+                       std::unique_ptr<ElseStatementASTnode> elseStatement) : expression(std::move(expression)), block(std::move(block)), elseStatement(std::move(elseStatement)) {}
+    virtual Value* codeGen() override {
+        Function* func = Builder.GetInsertBlock()->getParent();
+        BasicBlock* trueBB = BasicBlock::Create(TheContext, "ifTrue", func);
+        BasicBlock* falseBB;
+        if (elseStatement->block) {
+            falseBB = BasicBlock::Create(TheContext, "else", func);
+        }
+        BasicBlock* endBB = BasicBlock::Create(TheContext, "endIf", func);
+        Value* condVal = expression->codeGen();
+        if (!condVal) return nullptr;
+        condVal = promoteToFP(condVal);
+        Value* compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "ifCond");
+        if (elseStatement->block) {
+            Builder.CreateCondBr(compVal, trueBB, falseBB);
+        } else {
+            Builder.CreateCondBr(compVal, trueBB, endBB);
+        }
+        Builder.SetInsertPoint(trueBB);
+        Value* trueVal = block->codeGen();
+        Builder.CreateBr(endBB);
+        trueBB = Builder.GetInsertBlock();
+        if (elseStatement->block) {
+            Builder.SetInsertPoint(falseBB);
+            Value* falseVal = elseStatement->codeGen();
+            Builder.CreateBr(endBB);
+            falseBB = Builder.GetInsertBlock();
+        }
+        Builder.SetInsertPoint(endBB);
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return "if (" + expression->toFormattedString() + ")" + block->toFormattedString() + elseStatement->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        std::string string = offset + branch + "If Statement\n" +
+                             expression->toString(incOffset) + "\n" +
+                             block->toString(incOffset);
+        if (elseStatement->block) string += "\n" + elseStatement->toString(offset);
+        return string;
+    };
+};
+
+struct DeclarationASTnode : public ASTnode {
+    int type;
+    std::string name;
+    std::vector<std::unique_ptr<ParamASTnode>> paramList;
+    std::unique_ptr<BlockASTnode> block;
+
+    DeclarationASTnode(){};
+    DeclarationASTnode(int type,
+                       std::string name,
+                       std::vector<std::unique_ptr<ParamASTnode>> paramList,
+                       std::unique_ptr<BlockASTnode> block) : type(type), name(name), paramList(std::move(paramList)), block(std::move(block)) {}
+    virtual Function* codeGen() override {
+        if (block) {
+            Function* func = TheModule->getFunction(name);
+            if (!func) {
+                std::vector<Type*> types;
+                for (std::unique_ptr<ParamASTnode>& param : paramList) {
+                    if (param->type != VOID_TOK) {
+                        types.push_back(TypeMap.at(param->type));
+                    }
+                }
+                FunctionType* ft = FunctionType::get(TypeMap.at(type), types, false);
+                func = Function::Create(ft, Function::ExternalLinkage, name, TheModule.get());
+                int i = 0;
+                for (auto& param : func->args())
+                    param.setName(paramList[i++]->name);
+            }
+            BasicBlock* funcBB = BasicBlock::Create(TheContext, "entry", func);
+            Builder.SetInsertPoint(funcBB);
+
+            NamedValues.clear();
+            for (auto& arg : func->args()) {
+                AllocaInst* alloca = CreateEntryBlockAlloca(func, arg.getType(), std::string(arg.getName()));
+                Builder.CreateStore(&arg, alloca);
+                NamedValues[std::string(arg.getName())] = alloca;
+            }
+            block->codeGen();
+
+            // verifyFunction(*func);
+            return func;
+        } else {
+            TheModule->getOrInsertGlobal(name, TypeMap.at(type));
+            GlobalVariable* gVar = TheModule->getNamedGlobal(name);
+            gVar->setLinkage(GlobalValue::CommonLinkage);
+            // gVar->setAlignment(MaybeAlign(4));
+            if (type == FLOAT_TOK) {
+                gVar->setInitializer(ConstantFP::get(TypeMap.at(type), 0));
+            } else {
+                gVar->setInitializer(ConstantInt::get(TypeMap.at(type), 0));
+            }
+        }
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        std::string string = offset + branch + "Declaration " + std::to_string(type) + " " + name;
+        if (block) string += "\n" +
+                             to_string(paramList, incOffset) + "\n" +
+                             block->toString(incOffset);
+        return string;
+    };
+};
+
+struct ExternASTnode : public ASTnode {
+    int type;
+    std::string name;
+    std::vector<std::unique_ptr<ParamASTnode>> paramList;
+
+    ExternASTnode(){};
+    ExternASTnode(int type, std::string name, std::vector<std::unique_ptr<ParamASTnode>> paramList) : type(type), name(name), paramList(std::move(paramList)) {}
+    virtual Value* codeGen() override {
+        std::vector<Type*> types;
+        for (std::unique_ptr<ParamASTnode>& param : paramList) {
+            types.push_back(TypeMap.at(param->type));
+        }
+        FunctionType* ft = FunctionType::get(TypeMap.at(type), types, false);
+        Function* func = Function::Create(ft, Function::ExternalLinkage, name, TheModule.get());
+        int i = 0;
+        for (auto& param : func->args())
+            param.setName(paramList[i++]->name);
+        return func;
+    }
+    virtual std::string toFormattedString() const override {
+        return "extern " + std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + branch + "Extern " + std::to_string(type) + " " + name + "\n" +
+               to_string(paramList, incOffset);
+    };
+};
+
+struct ProgramASTnode : public ASTnode {
+    std::vector<std::unique_ptr<ExternASTnode>> externList;
+    std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
+
+    ProgramASTnode(){};
+    ProgramASTnode(std::vector<std::unique_ptr<ExternASTnode>> externList,
+                   std::vector<std::unique_ptr<DeclarationASTnode>> declarationList) : externList(std::move(externList)), declarationList(std::move(declarationList)) {}
+    virtual Value* codeGen() override {
+        for (std::unique_ptr<ExternASTnode>& ext : externList) {
+            ext->codeGen();
+        }
+        for (std::unique_ptr<DeclarationASTnode>& decl : declarationList) {
+            decl->codeGen();
+        }
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return to_string(externList) + " " + to_string(declarationList);
+    };
+    virtual std::string toString(std::string offset = "") const override {
+        std::string incOffset = incrementOffset(offset);
+        return offset + "Program\n" +
+               to_string(externList, offset) + "\n" +
+               to_string(declarationList, offset);
+    };
+};
+
+//===----------------------------------------------------------------------===//
+// Parser
+//===----------------------------------------------------------------------===//
+
 struct Expression {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Expression::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // arg_list ::= "," expr arg_list | epsilon
 struct ArgList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing arg list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> argList;
         while (firstSet.contains(CurTok.type)) {
             getNextToken();
-            argList.emplace_back(std::move(Expression::Parse()));
+            argList.emplace_back(std::move(Expression::parse()));
         };
         return argList;
     }
@@ -781,12 +1057,12 @@ TokenSet ArgList::firstSet = TokenSet({COMMA});
 // args ::= expr arg_list | epsilon
 struct Args {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing args", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
         if (Expression::firstSet.contains(CurTok.type)) {
-            args.emplace_back(std::move(Expression::Parse()));
-            std::vector<std::unique_ptr<ExpressionASTnode>> argList = ArgList::Parse();
+            args.emplace_back(std::move(Expression::parse()));
+            std::vector<std::unique_ptr<ExpressionASTnode>> argList = ArgList::parse();
             std::move(argList.begin(), argList.end(), std::back_inserter(args));
         }
         return args;
@@ -797,12 +1073,12 @@ TokenSet Args::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT,
 // ident_body ::= "(" args ")" | epsilon
 struct IdentBody {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ExpressionASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing identBody", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
         if (firstSet.contains(CurTok.type)) {
             getNextToken();
-            args = Args::Parse();
+            args = Args::parse();
             getNextToken();
         }
         return args;
@@ -810,303 +1086,313 @@ struct IdentBody {
 };
 TokenSet IdentBody::firstSet = TokenSet({LPAR});
 
-//  rval_term ::= "-" expr
-//       | "!" expr
+//  rval_term ::= "-" rval_term
+//       | "!" rval_term
 //       | "(" expr ")"
 //       | IDENT ident_body
 //       | INT_LIT | FLOAT_LIT | BOOL_LIT
 struct RvalTerm {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse() {
+    static std::unique_ptr<ExpressionASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing rvalterm", CurTok.lexeme.c_str(), CurTok.type);
-        std::string op;
-        std::unique_ptr<ExpressionASTnode> expression;
-        std::string ident;
-        std::vector<std::unique_ptr<ExpressionASTnode>> args;
-        std::string intVal;
-        std::string floatVal;
-        std::string boolVal;
+        std::string intLit;
+        std::string floatLit;
+        std::string boolLit;
         switch (CurTok.type) {
-            case IDENT:
-                ident = CurTok.lexeme;
+            case IDENT: {
+                std::string ident = CurTok.lexeme;
                 getNextToken();
-                args = IdentBody::Parse();
+                std::vector<std::unique_ptr<ExpressionASTnode>> args;
+                if (CurTok.type == LPAR) {
+                    args = std::move(IdentBody::parse());
+                    return std::make_unique<FunctionCallASTnode>(ident, std::move(args));
+                }
+                return std::make_unique<VariableASTnode>(ident);
                 break;
-            case MINUS:
-            case NOT:
-                op = CurTok.lexeme;
+            }
+            case MINUS: {
+            }
+            case NOT: {
+                std::string op = CurTok.lexeme;
                 getNextToken();
-                expression = Expression::Parse();
+                std::unique_ptr<ExpressionASTnode> term = std::move(RvalTerm::parse());
+                return std::make_unique<UnaryExpressionASTnode>(op, std::move(term));
                 break;
-            case LPAR:
+            }
+            case LPAR: {
                 getNextToken();
-                expression = Expression::Parse();
+                std::unique_ptr<ExpressionASTnode> expression = std::move(Expression::parse());
                 getNextToken();
+                return std::move(expression);
                 break;
+            }
             case INT_LIT:
-                intVal = CurTok.lexeme;
+                intLit = CurTok.lexeme;
                 getNextToken();
                 break;
             case FLOAT_LIT:
-                floatVal = CurTok.lexeme;
+                floatLit = CurTok.lexeme;
                 getNextToken();
                 break;
             case BOOL_LIT:
-                boolVal = CurTok.lexeme;
+                boolLit = CurTok.lexeme;
                 getNextToken();
                 break;
         }
-        return std::make_unique<ExpressionASTnode>(op, std::move(expression), ident, std::move(args), intVal, floatVal, boolVal);
+        return std::make_unique<LiteralASTnode>(intLit, floatLit, boolLit);
     }
 };
 TokenSet RvalTerm::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 struct Rval6List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval6List::firstSet = TokenSet({ASTERIX, DIV, MOD});
 
 struct Rval6 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_6_list ::= "*" rval_6 | "/" rval_6 | "%" rval_6 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval6List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval6List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval6;
     if (Rval6List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval6 = Rval6::Parse();
+        rval6 = Rval6::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval6));
 }
 
 // rval_6 ::= rval_term rval_6_list
-std::unique_ptr<ExpressionASTnode> Rval6::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval6::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rvalTerm = RvalTerm::Parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval6List = Rval6List::Parse();
+    std::unique_ptr<ExpressionASTnode> rvalTerm = RvalTerm::parse();
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval6List = Rval6List::parse();
     std::string binOp = std::get<0>(rval6List);
+    if (binOp == "") return std::move(rvalTerm);
     std::unique_ptr<ExpressionASTnode> rval6 = std::move(std::get<1>(rval6List));
-    return std::make_unique<ExpressionASTnode>(std::move(rvalTerm), std::move(binOp), std::move(rval6));
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rvalTerm), std::move(binOp), std::move(rval6));
 }
 
 struct Rval5List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval5List::firstSet = TokenSet({PLUS, MINUS});
 
 struct Rval5 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_5_list ::= "+" rval_5 | "-" rval_5 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval5List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval5List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval5;
     if (Rval5List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval5 = Rval5::Parse();
+        rval5 = Rval5::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval5));
 }
 
 // rval_5 ::= rval_6 rval_5_list
-std::unique_ptr<ExpressionASTnode> Rval5::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval5::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval6 = Rval6::Parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval5List = Rval5List::Parse();
+    std::unique_ptr<ExpressionASTnode> rval6 = Rval6::parse();
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval5List = Rval5List::parse();
     std::string binOp = std::get<0>(rval5List);
+    if (binOp == "") return std::move(rval6);
     std::unique_ptr<ExpressionASTnode> rval5 = std::move(std::get<1>(rval5List));
-    return std::make_unique<ExpressionASTnode>(std::move(rval6), std::move(binOp), std::move(rval5));
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rval6), std::move(binOp), std::move(rval5));
 }
 
 struct Rval4List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval4List::firstSet = TokenSet({LT, LE, GT, GE});
 
 struct Rval4 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | "=" rval_4 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval4List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval4List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval4;
     if (Rval4List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval4 = Rval4::Parse();
+        rval4 = Rval4::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval4));
 }
 
 // rval_4 ::= rval_5 rval_4_list
-std::unique_ptr<ExpressionASTnode> Rval4::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval4::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval5 = Rval5::Parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval4List = Rval4List::Parse();
+    std::unique_ptr<ExpressionASTnode> rval5 = Rval5::parse();
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval4List = Rval4List::parse();
     std::string binOp = std::get<0>(rval4List);
     std::unique_ptr<ExpressionASTnode> rval4 = std::move(std::get<1>(rval4List));
-    return std::make_unique<ExpressionASTnode>(std::move(rval5), std::move(binOp), std::move(rval4));
+    if (binOp == "") return std::move(rval5);
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rval5), std::move(binOp), std::move(rval4));
 }
 
 struct Rval3List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval3List::firstSet = TokenSet({EQ, NE});
 
 struct Rval3 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_3_list ::= "==" rval_3 | "!=" rval_3 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval3List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval3List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval3;
     if (Rval3List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval3 = Rval3::Parse();
+        rval3 = Rval3::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval3));
 }
 
 // rval_3 ::= rval_4 rval_3_list
-std::unique_ptr<ExpressionASTnode> Rval3::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval3::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval4 = Rval4::Parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval3List = Rval3List::Parse();
+    std::unique_ptr<ExpressionASTnode> rval4 = Rval4::parse();
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval3List = Rval3List::parse();
     std::string binOp = std::get<0>(rval3List);
+    if (binOp == "") return std::move(rval4);
     std::unique_ptr<ExpressionASTnode> rval3 = std::move(std::get<1>(rval3List));
-    return std::make_unique<ExpressionASTnode>(std::move(rval4), std::move(binOp), std::move(rval3));
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rval4), std::move(binOp), std::move(rval3));
 }
 
 struct Rval2List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval2List::firstSet = TokenSet({AND});
 
 struct Rval2 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_2_list ::= "&&" rval_2 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval2List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval2List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval2;
     if (Rval2List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval2 = Rval2::Parse();
+        rval2 = Rval2::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval2));
 }
 
 // rval_2 ::= rval_3 rval_2_list
-std::unique_ptr<ExpressionASTnode> Rval2::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval2::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval3 = std::move(Rval3::Parse());
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval2List = Rval2List::Parse();
+    std::unique_ptr<ExpressionASTnode> rval3 = std::move(Rval3::parse());
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval2List = Rval2List::parse();
     std::string binOp = std::get<0>(rval2List);
+    if (binOp == "") return std::move(rval3);
     std::unique_ptr<ExpressionASTnode> rval2 = std::move(std::get<1>(rval2List));
-    return std::make_unique<ExpressionASTnode>(std::move(rval3), std::move(binOp), std::move(rval2));
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rval3), std::move(binOp), std::move(rval2));
 }
 
 struct Rval1List {
     static TokenSet firstSet;
-    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Parse();
+    static std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> parse();
 };
 TokenSet Rval1List::firstSet = TokenSet({OR});
 
 struct Rval1 {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> Parse();
+    static std::unique_ptr<ExpressionASTnode> parse();
 };
 TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
 
 // rval_1_list ::= "||" rval_1 | epsilon
-std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval1List::Parse() {
+std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> Rval1List::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1list", CurTok.lexeme.c_str(), CurTok.type);
     std::string binOp;
     std::unique_ptr<ExpressionASTnode> rval1;
     if (Rval1List::firstSet.contains(CurTok.type)) {
         binOp = CurTok.lexeme;
         getNextToken();
-        rval1 = Rval1::Parse();
+        rval1 = Rval1::parse();
     }
     return std::make_tuple(std::move(binOp), std::move(rval1));
 };
 
 // rval_1 ::= rval_2 rval_1_list
-std::unique_ptr<ExpressionASTnode> Rval1::Parse() {
+std::unique_ptr<ExpressionASTnode> Rval1::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1", CurTok.lexeme.c_str(), CurTok.type);
-    std::unique_ptr<ExpressionASTnode> rval2 = Rval2::Parse();
-    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval1List = Rval1List::Parse();
+    std::unique_ptr<ExpressionASTnode> rval2 = Rval2::parse();
+    std::tuple<std::string, std::unique_ptr<ExpressionASTnode>> rval1List = Rval1List::parse();
     std::string binOp = std::get<0>(rval1List);
+    if (binOp == "") return std::move(rval2);
     std::unique_ptr<ExpressionASTnode> rval1 = std::move(std::get<1>(rval1List));
-    return std::make_unique<ExpressionASTnode>(std::move(rval2), std::move(binOp), std::move(rval1));
+    return std::make_unique<BinaryExpressionASTnode>(std::move(rval2), std::move(binOp), std::move(rval1));
 };
 
 // expr ::= IDENT "=" expr | rval_1
-std::unique_ptr<ExpressionASTnode> Expression::Parse() {
+std::unique_ptr<ExpressionASTnode> Expression::parse() {
     fprintf(stderr, "%s: %s with type %d (line %d, col %d)\n", "Parsing expr", CurTok.lexeme.c_str(), CurTok.type, CurTok.lineNo, CurTok.columnNo);
     TOKEN identTok;
-    std::string ident;
-    std::unique_ptr<ExpressionASTnode>
-        expression;
+    std::unique_ptr<ExpressionASTnode> expression;
     if (CurTok.type == IDENT) {
         identTok = CurTok;
         getNextToken();
         if (CurTok.type == ASSIGN) {
-            ident = CurTok.lexeme;
             getNextToken();
-            expression = std::move(Expression::Parse());
+            expression = std::move(Expression::parse());
         } else {
             putBackToken(CurTok);
             CurTok = identTok;
-            expression = std::move(Rval1::Parse());
+            return std::move(Rval1::parse());
         }
     } else {
-        return std::move(Rval1::Parse());
+        return std::move(Rval1::parse());
     }
-    return std::make_unique<ExpressionASTnode>(std::move(ident), std::move(expression));
+    return std::make_unique<AssignmentExpressionASTnode>(std::move(identTok.lexeme), std::move(expression));
 }
 
 // expr_stmt ::= expr ";" | ";"
 struct ExpressionStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionStatementASTnode> Parse() {
+    static std::unique_ptr<ExpressionASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing expr stmt", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<ExpressionASTnode> expression;
-        if (Expression::firstSet.contains(CurTok.type)) {
-            expression = Expression::Parse();
+        if (CurTok.type != SC) {
+            expression = std::move(Expression::parse());
         }
         getNextToken();
-        return std::make_unique<ExpressionStatementASTnode>(std::move(expression));
+        return std::move(expression);
     }
 };
 TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC});
@@ -1114,30 +1400,30 @@ TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_
 // return_stmt ::= "return" expr_stmt
 struct ReturnStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<ReturnStatementASTnode> Parse() {
+    static std::unique_ptr<ReturnStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing return", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
-        std::unique_ptr<ExpressionStatementASTnode> expressionStatement = std::move(ExpressionStatement::Parse());
-        return std::make_unique<ReturnStatementASTnode>(std::move(expressionStatement));
+        std::unique_ptr<ExpressionASTnode> expression = std::move(ExpressionStatement::parse());
+        return std::make_unique<ReturnStatementASTnode>(std::move(expression));
     }
 };
 TokenSet ReturnStatement::firstSet = TokenSet({RETURN});
 
 struct Block {
     static TokenSet firstSet;
-    static std::unique_ptr<BlockASTnode> Parse();
+    static std::unique_ptr<BlockASTnode> parse();
 };
 TokenSet Block::firstSet = TokenSet({LBRA});
 
 // else_stmt  ::= "else" block | epsilon
 struct ElseStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<ElseStatementASTnode> Parse() {
+    static std::unique_ptr<ElseStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing else", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<BlockASTnode> block;
         if (firstSet.contains(CurTok.type)) {
             getNextToken();
-            block = Block::Parse();
+            block = Block::parse();
         }
         return std::make_unique<ElseStatementASTnode>(std::move(block));
     }
@@ -1147,35 +1433,35 @@ TokenSet ElseStatement::firstSet = TokenSet({ELSE});
 // if_stmt ::= "if" "(" expr ")" block else_stmt
 struct IfStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<IfStatementASTnode> Parse() {
+    static std::unique_ptr<IfStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing if", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         getNextToken();
-        std::unique_ptr<ExpressionASTnode> expression = Expression::Parse();
+        std::unique_ptr<ExpressionASTnode> expression = Expression::parse();
         getNextToken();
-        std::unique_ptr<BlockASTnode> block = Block::Parse();
-        std::unique_ptr<ElseStatementASTnode> elseStatement = ElseStatement::Parse();
+        std::unique_ptr<BlockASTnode> block = Block::parse();
+        std::unique_ptr<ElseStatementASTnode> elseStatement = ElseStatement::parse();
         return std::make_unique<IfStatementASTnode>(std::move(expression), std::move(block), std::move(elseStatement));
     }
 };
 TokenSet IfStatement::firstSet = TokenSet({IF});
 struct Statement {
     static TokenSet firstSet;
-    static std::unique_ptr<StatementASTnode> Parse();
+    static std::unique_ptr<StatementASTnode> parse();
 };
 TokenSet Statement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC, LBRA, IF, WHILE, RETURN});
 
-// while_stmt ::= "while" "(" expr ")" block
+// while_stmt ::= "while" "(" expr ")" stmt
 struct WhileStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<WhileStatementASTnode> Parse() {
+    static std::unique_ptr<WhileStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing while", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         getNextToken();
-        std::unique_ptr<ExpressionASTnode> expression = Expression::Parse();
+        std::unique_ptr<ExpressionASTnode> expression = Expression::parse();
         getNextToken();
-        std::unique_ptr<BlockASTnode> block = Block::Parse();
-        return std::make_unique<WhileStatementASTnode>(std::move(expression), std::move(block));
+        std::unique_ptr<StatementASTnode> statement = Statement::parse();
+        return std::make_unique<WhileStatementASTnode>(std::move(expression), std::move(statement));
     }
 };
 TokenSet WhileStatement::firstSet = TokenSet({WHILE});
@@ -1184,19 +1470,19 @@ TokenSet WhileStatement::firstSet = TokenSet({WHILE});
 //		| return_stmt
 //      | while_stmt
 //      | if_stmt
-std::unique_ptr<StatementASTnode> Statement::Parse() {
+std::unique_ptr<StatementASTnode> Statement::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<StatementASTnode> statement;
     if (Block::firstSet.contains(CurTok.type)) {
-        statement = Block::Parse();
+        statement = Block::parse();
     } else if (WhileStatement::firstSet.contains(CurTok.type)) {
-        statement = WhileStatement::Parse();
+        statement = WhileStatement::parse();
     } else if (IfStatement::firstSet.contains(CurTok.type)) {
-        statement = IfStatement::Parse();
+        statement = IfStatement::parse();
     } else if (ReturnStatement::firstSet.contains(CurTok.type)) {
-        statement = ReturnStatement::Parse();
+        statement = ReturnStatement::parse();
     } else {
-        statement = ExpressionStatement::Parse();
+        statement = ExpressionStatement::parse();
     }
     return statement;
 }
@@ -1204,11 +1490,11 @@ std::unique_ptr<StatementASTnode> Statement::Parse() {
 // stmt_list ::= stmt stmt_list | epsilon
 struct StatementList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<StatementASTnode>> Parse() {
+    static std::vector<std::unique_ptr<StatementASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<StatementASTnode>> statements;
         while (firstSet.contains(CurTok.type)) {
-            statements.emplace_back(std::move(Statement::Parse()));
+            statements.emplace_back(std::move(Statement::parse()));
         }
         return statements;
     }
@@ -1218,7 +1504,7 @@ TokenSet StatementList::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, F
 // local_decl ::= var_type IDENT ";"
 struct LocalDeclaration {
     static TokenSet firstSet;
-    static std::unique_ptr<LocalDeclarationASTnode> Parse() {
+    static std::unique_ptr<LocalDeclarationASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl", CurTok.lexeme.c_str(), CurTok.type);
         int type = CurTok.type;
         getNextToken();  // eat type.
@@ -1233,11 +1519,11 @@ TokenSet LocalDeclaration::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 // local_decl_list ::= local_decl local_decl_list | epsilon
 struct LocalDeclarationList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<LocalDeclarationASTnode>> Parse() {
+    static std::vector<std::unique_ptr<LocalDeclarationASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations;
         while (firstSet.contains(CurTok.type)) {
-            localDeclarations.emplace_back(std::move(LocalDeclaration::Parse()));
+            localDeclarations.emplace_back(std::move(LocalDeclaration::parse()));
         }
         return localDeclarations;
     }
@@ -1245,11 +1531,11 @@ struct LocalDeclarationList {
 TokenSet LocalDeclarationList::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 
 // block ::= "{" local_decl_list stmt_list "}"
-std::unique_ptr<BlockASTnode> Block::Parse() {
+std::unique_ptr<BlockASTnode> Block::parse() {
     fprintf(stderr, "%s: %s with type %d\n", "Parsing block", CurTok.lexeme.c_str(), CurTok.type);
     getNextToken();  // eat "{".
-    std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations = LocalDeclarationList::Parse();
-    std::vector<std::unique_ptr<StatementASTnode>> statements = StatementList::Parse();
+    std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations = LocalDeclarationList::parse();
+    std::vector<std::unique_ptr<StatementASTnode>> statements = StatementList::parse();
     getNextToken();  // eat "}"
     return std::make_unique<BlockASTnode>(std::move(localDeclarations), std::move(statements));
 }
@@ -1257,7 +1543,7 @@ std::unique_ptr<BlockASTnode> Block::Parse() {
 // param ::= type_spec IDENT
 struct Param {
     static TokenSet firstSet;
-    static std::unique_ptr<ParamASTnode> Parse() {
+    static std::unique_ptr<ParamASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing param", CurTok.lexeme.c_str(), CurTok.type);
         int type = CurTok.type;
         getNextToken();  // eat type.
@@ -1266,32 +1552,36 @@ struct Param {
         return std::make_unique<ParamASTnode>(std::move(type), std::move(ident));
     }
 };
-TokenSet Param::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
+TokenSet Param::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 
 // param_list ::= "," param param_list | epsilon
 struct ParamList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ParamASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ParamASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing paramlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> paramList;
         while (firstSet.contains(CurTok.type)) {
             getNextToken();
-            paramList.emplace_back(std::move(Param::Parse()));
+            paramList.emplace_back(std::move(Param::parse()));
         }
         return paramList;
     }
 };
 TokenSet ParamList::firstSet = TokenSet({COMMA});
 
-// params ::= param param_list | epsilon
+// params ::= param param_list | "void" | epsilon
 struct Params {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ParamASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ParamASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing params", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> params;
-        if (Param::firstSet.contains(CurTok.type)) {
-            params.emplace_back(std::move(Param::Parse()));
-            std::vector<std::unique_ptr<ParamASTnode>> paramList = ParamList::Parse();
+        if (CurTok.type == VOID_TOK) {
+            std::unique_ptr<ParamASTnode> voidParam = std::make_unique<ParamASTnode>(VOID_TOK, "");
+            params.emplace_back(std::move(voidParam));
+            getNextToken();
+        } else if (Param::firstSet.contains(CurTok.type)) {
+            params.emplace_back(std::move(Param::parse()));
+            std::vector<std::unique_ptr<ParamASTnode>> paramList = ParamList::parse();
             std::move(paramList.begin(), paramList.end(), std::back_inserter(params));
         }
         return params;
@@ -1302,31 +1592,27 @@ TokenSet Params::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 // func_body ::= "(" params ")" block
 struct FunctionBody {
     static TokenSet firstSet;
-    static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> Parse() {
+    static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing func body", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
-        std::vector<std::unique_ptr<ParamASTnode>> params = Params::Parse();
+        std::vector<std::unique_ptr<ParamASTnode>> params = Params::parse();
         getNextToken();
-        std::unique_ptr<BlockASTnode> block = std::move(Block::Parse());
+        std::unique_ptr<BlockASTnode> block = std::move(Block::parse());
         return std::make_tuple(std::move(params), std::move(block));
     }
 };
 TokenSet FunctionBody::firstSet = TokenSet({LPAR});
 
-// type_spec ::= "void" | var_type
-//
-// var_type ::= "int" | "float" | "bool"
-//
 // decl_body :: = ";" | func_body
 struct DeclarationBody {
     static TokenSet firstSet;
-    static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> Parse() {
+    static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing decl body", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> functionBody;
         if (CurTok.type == SC) {
             getNextToken();
         } else {
-            functionBody = FunctionBody::Parse();
+            functionBody = FunctionBody::parse();
         }
         return functionBody;
     }
@@ -1335,7 +1621,7 @@ struct DeclarationBody {
 // decl ::= "void" IDENT func_body | var_type IDENT decl_body
 struct Declaration {
     static TokenSet firstSet;
-    static std::unique_ptr<DeclarationASTnode> Parse() {
+    static std::unique_ptr<DeclarationASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing decl", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> declarationBody;
         std::vector<std::unique_ptr<ParamASTnode>> params;
@@ -1345,12 +1631,12 @@ struct Declaration {
         std::string ident = CurTok.lexeme;
         getNextToken();
         if (type == VOID_TOK) {
-            declarationBody = FunctionBody::Parse();
+            declarationBody = FunctionBody::parse();
         } else {
-            declarationBody = DeclarationBody::Parse();
-            params = std::move(std::get<0>(declarationBody));
-            block = std::move(std::get<1>(declarationBody));
+            declarationBody = DeclarationBody::parse();
         }
+        params = std::move(std::get<0>(declarationBody));
+        block = std::move(std::get<1>(declarationBody));
         return std::make_unique<DeclarationASTnode>(std::move(type), std::move(ident), std::move(params), std::move(block));
     }
 };
@@ -1359,11 +1645,11 @@ TokenSet Declaration::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TO
 // decl_list ::= decl decl_list | epsilon
 struct DeclarationList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<DeclarationASTnode>> Parse() {
+    static std::vector<std::unique_ptr<DeclarationASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
         while (firstSet.contains(CurTok.type)) {
-            declarationList.emplace_back(std::move(Declaration::Parse()));
+            declarationList.emplace_back(std::move(Declaration::parse()));
         }
         return declarationList;
     }
@@ -1373,7 +1659,7 @@ TokenSet DeclarationList::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOO
 // extern ::= "extern" type_spec IDENT "(" params ")" ";"
 struct Extern {
     static TokenSet firstSet;
-    static std::unique_ptr<ExternASTnode> Parse() {
+    static std::unique_ptr<ExternASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing extern", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();  // eat extern.
         int type = CurTok.type;
@@ -1381,24 +1667,23 @@ struct Extern {
         std::string ident = CurTok.lexeme;
         getNextToken();  // eat ident.
         getNextToken();
-        std::vector<std::unique_ptr<ParamASTnode>> params = Params::Parse();
+        std::vector<std::unique_ptr<ParamASTnode>> params = Params::parse();
         getNextToken();
         getNextToken();
         return std::make_unique<ExternASTnode>(std::move(type), std::move(ident), std::move(params));
     }
 };
-TokenSet Extern::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
+TokenSet Extern::firstSet = TokenSet({EXTERN});
 
 // extern_list ::= extern extern_list | epsilon
 struct ExternList {
     static TokenSet firstSet;
-    static std::vector<std::unique_ptr<ExternASTnode>> Parse() {
+    static std::vector<std::unique_ptr<ExternASTnode>> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing externlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
         while (firstSet.contains(CurTok.type)) {
-            externList.emplace_back(std::move(Extern::Parse()));
+            externList.emplace_back(std::move(Extern::parse()));
         };
-
         return externList;
     }
 };
@@ -1407,16 +1692,16 @@ TokenSet ExternList::firstSet = TokenSet({EXTERN});
 // program ::= extern_list decl decl_list
 struct Program {
     static TokenSet firstSet;
-    static std::unique_ptr<ProgramASTnode> Parse() {
+    static std::unique_ptr<ProgramASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing program", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
         if (ExternList::firstSet.contains(CurTok.type)) {
-            externList = std::move(ExternList::Parse());
+            externList = std::move(ExternList::parse());
         }
-        declarationList.emplace_back(std::move(Declaration::Parse()));
+        declarationList.emplace_back(std::move(Declaration::parse()));
         if (DeclarationList::firstSet.contains(CurTok.type)) {
-            std::vector<std::unique_ptr<DeclarationASTnode>> declarationListTail = std::move(DeclarationList::Parse());
+            std::vector<std::unique_ptr<DeclarationASTnode>> declarationListTail = std::move(DeclarationList::parse());
             std::move(declarationListTail.begin(), declarationListTail.end(), std::back_inserter(declarationList));
         }
         getNextToken();
@@ -1430,15 +1715,14 @@ struct Program {
 
 static std::unique_ptr<ProgramASTnode> Parser() {
     // fprintf(stderr, "ready> ");
-    return std::move(Program::Parse());
+    return std::move(Program::parse());
 }
 
 //===----------------------------------------------------------------------===//
 // AST Printer
 //===----------------------------------------------------------------------===//
 
-inline llvm::raw_ostream& operator<<(llvm::raw_ostream& os,
-                                     const ASTnode& ast) {
+llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
     os << ast.toString("");
     return os;
 }
@@ -1477,9 +1761,11 @@ int main(int argc, char** argv) {
     std::unique_ptr<ProgramASTnode> programAST = Parser();
     fprintf(stderr, "Parsing finished\n");
 
+    // llvm::outs() << programAST << "\n";
     fprintf(stderr, "%s\n", programAST->toString().c_str());
     fprintf(stderr, "AST node printing finished\n");
 
+    programAST->codeGen();
     //********************* Start printing final IR **************************
     // Print out all of the generated code into a file called output.ll
     auto Filename = "output.ll";
@@ -1490,9 +1776,10 @@ int main(int argc, char** argv) {
         errs() << "Could not open file: " << EC.message();
         return 1;
     }
-    // TheModule->print(errs(), nullptr); // print IR to terminal
+    TheModule->print(errs(), nullptr);  // print IR to terminal
     TheModule->print(dest, nullptr);
     //********************* End printing final IR ****************************
+    fprintf(stderr, "IR Code Generation finished\n");
 
     fclose(pFile);  // close the file that contains the code that was parsed
     return 0;
