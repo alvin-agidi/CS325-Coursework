@@ -13,9 +13,9 @@ type_spec ::= "void" | var_type
 
 func_body ::= "(" params ")" block
 
-params ::= param param_list | epsilon
+params ::= param param_list | "void" | epsilon
 param_list ::= "," param param_list | epsilon
-param ::= type_spec IDENT
+param ::= var_type IDENT
 
 block ::= "{" local_decl_list stmt_list "}" 
 
@@ -49,13 +49,13 @@ rval_2_list ::= "&&" rval_2 | epsilon
 rval_3 ::= rval_4 rval_3_list
 rval_3_list ::= "==" rval_3 | "!=" rval_3 | epsilon
 rval_4 ::= rval_5 rval_4_list
-rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | "=" rval_4 | epsilon
+rval_4_list ::= "<" rval_4 | "<=" rval_4 | ">" rval_4 | ">=" rval_4 | epsilon
 rval_5 ::= rval_6 rval_5_list
 rval_5_list ::= "+" rval_5 | "-" rval_5 | epsilon
 rval_6 ::= rval_term rval_6_list
 rval_6_list ::= "*" rval_6 | "/" rval_6 | "%" rval_6 | epsilon
-rval_term ::= "-" expr
-    | "!" expr
+rval_term ::= "-" rval_term
+    | "!" rval_term
     | "(" expr ")"
     | IDENT ident_body
     | INT_LIT | FLOAT_LIT | BOOL_LIT
@@ -75,9 +75,9 @@ FIRST(decl) = {"void"} + FIRST(var_decl) = {"void", "int", "float", "bool"}
 
 FIRST(decl_list) = FIRST(decl) + {epsilon} = {"void", "int", "float", "bool", epsilon}
 
-FIRST(params) = FIRST(param) + {epsilon} = {"void", "int", "float", "bool", epsilon}
+FIRST(params) = FIRST(param) + {"void", epsilon} = {"int", "float", "bool", "void", epsilon}
 
-FIRST(param) = FIRST(type_spec) = {"void", "int", "float", "bool"}
+FIRST(param) = FIRST(var_type) = {"int", "float", "bool"}
 
 FIRST(type_spec) = {"void"} + FIRST(var_decl) = {"void", "int", "float", "bool"}
 
@@ -169,7 +169,7 @@ FOLLOW(while_stmt) = FOLLOW(stmt) = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, B
 
 FOLLOW(return_stmt) = FOLLOW(stmt) = {IDENT, "-", "!", "(", INT_LIT, FLOAT_LIT, BOOL_LIT, ";", "if", "while", "return", "}"}
 
-FOLLOW(expr) = {")", ";"} + FOLLOW(rval_term) + FIRST(arg_list) + FOLLOW(args) + FOLLOW(arg_list) = {"*", "/", "%", "+", "-", "<", "<=", ">", ">=", "==", "!=", "&&", "||", ")", ";", ","}
+FOLLOW(expr) = {")", ";"} + FIRST(arg_list) + FOLLOW(args) + FOLLOW(arg_list) = {")", ";", ","}
 
 FOLLOW(args) = {")"}
 
