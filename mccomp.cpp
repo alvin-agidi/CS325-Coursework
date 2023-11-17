@@ -61,10 +61,10 @@ enum TOKEN_TYPE {
     COMMA = int(','),  // comma
 
     // types
-    INT_TOK = -2,    // "int"
-    FLOAT_TOK = -4,  // "float"
-    BOOL_TOK = -5,   // "bool"
-    VOID_TOK = -3,   // "void"
+    FLOAT_TOK = -2,  // "float"
+    INT_TOK = -3,    // "int"
+    BOOL_TOK = -4,   // "bool"
+    VOID_TOK = -5,   // "void"
 
     // keywords
     EXTERN = -6,   // "extern"
@@ -372,14 +372,25 @@ static TOKEN gettok() {
 static LLVMContext TheContext;
 static IRBuilder<> Builder(TheContext);
 static std::unique_ptr<Module> TheModule;
-// static std::map<std::string, Value*> GlobalNamedValues;
 static std::map<std::string, AllocaInst*> NamedValues;
 
 static std ::map<int, Type*> TypeMap{
-    {INT_TOK, Type::getInt32Ty(TheContext)},
     {FLOAT_TOK, Type::getFloatTy(TheContext)},
+    {INT_TOK, Type::getInt32Ty(TheContext)},
     {BOOL_TOK, Type::getInt1Ty(TheContext)},
     {VOID_TOK, Type::getVoidTy(TheContext)}};
+
+static std ::map<Type*, int> TypeHierarchy{
+    {Type::getFloatTy(TheContext), FLOAT_TOK},
+    {Type::getInt32Ty(TheContext), INT_TOK},
+    {Type::getInt1Ty(TheContext), BOOL_TOK},
+    {Type::getVoidTy(TheContext), VOID_TOK}};
+
+static std ::map<int, std::string> TypeNames{
+    {FLOAT_TOK, "float"},
+    {INT_TOK, "int"},
+    {BOOL_TOK, "bool"},
+    {VOID_TOK, "void"}};
 
 static Type* getMaxType(Value* val1, Value* val2) {
     if (val1->getType()->isFloatTy() || val2->getType()->isFloatTy()) {
@@ -506,11 +517,11 @@ struct ParamASTnode : public ASTnode {
         return nullptr;
     }
     virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name;
+        return TypeNames.at(type) + " " + name;
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Param " + std::to_string(type) + " " + name;
+        return offset + branch + "Param " + TypeNames.at(type) + " " + name;
     };
 };
 
@@ -526,11 +537,11 @@ struct LocalDeclarationASTnode : public ASTnode {
         return nullptr;
     }
     virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name;
+        return TypeNames.at(type) + " " + name;
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Local Declaration " + std::to_string(type) + " " + name;
+        return offset + branch + "Local Declaration " + TypeNames.at(type) + " " + name;
     };
 };
 
@@ -627,7 +638,7 @@ struct UnaryExpressionASTnode : public ExpressionASTnode {
         } else if (op == "!") {
             return Builder.CreateFCmpUEQ(val, ConstantFP::get(TheContext, APFloat(0.0f)), "notTmp");
         }
-        return logErrorValue("invalid operator: " + op);
+        return logErrorValue("Undeclared operator: " + op);
     }
     virtual std::string toFormattedString() const override {
         return op + subExpression->toFormattedString();
@@ -644,9 +655,12 @@ struct VariableASTnode : public ExpressionASTnode {
     VariableASTnode(){};
     VariableASTnode(std::string name) : name(name) {}
     virtual Value* codeGen() override {
-        AllocaInst* val = NamedValues[name];
-        if (!val) return logErrorValue("Unknown variable: " + name);
-        return Builder.CreateLoad(val->getAllocatedType(), val, name);
+        if (AllocaInst* val = NamedValues[name]) {
+            return Builder.CreateLoad(val->getAllocatedType(), val, name);
+        } else if (GlobalVariable* gVar = TheModule->getGlobalVariable(name)) {
+            return Builder.CreateLoad(gVar->getValueType(), gVar, name);
+        }
+        return logErrorValue("Undeclared variable: " + name);
     }
     virtual std::string toFormattedString() const override {
         return name;
@@ -667,7 +681,7 @@ struct FunctionCallASTnode : public ExpressionASTnode {
     virtual Value* codeGen() override {
         Function* func = TheModule->getFunction(name);
         if (!func)
-            return logErrorValue("Unknown function: " + name + " (line " + std::to_string(lineNo) + ")");
+            return logErrorValue("Undeclared function: " + name + " (line " + std::to_string(lineNo) + ")");
 
         if (func->arg_size() != args.size())
             return logErrorValue("Incorrect number of arguments: " + std::to_string(func->arg_size()) + " expected, " + std::to_string(args.size()) + " given");
@@ -691,30 +705,30 @@ struct FunctionCallASTnode : public ExpressionASTnode {
 };
 
 struct LiteralASTnode : public ExpressionASTnode {
-    std::string intLit;
     std::string floatLit;
+    std::string intLit;
     std::string boolLit;
 
     LiteralASTnode(){};
-    LiteralASTnode(std::string intLit,
-                   std::string floatLit,
-                   std::string boolLit) : intLit(intLit), floatLit(floatLit), boolLit(boolLit) {}
+    LiteralASTnode(std::string floatLit,
+                   std::string intLit,
+                   std::string boolLit) : floatLit(floatLit), intLit(intLit), boolLit(boolLit) {}
     virtual Value* codeGen() override {
-        if (intLit != "") {
-            return ConstantInt::get(TheContext, APInt(32, std::stoi(intLit), true));
-        } else if (floatLit != "") {
+        if (floatLit != "") {
             return ConstantFP::get(TheContext, APFloat(std::stof(floatLit)));
+        } else if (intLit != "") {
+            return ConstantInt::get(TheContext, APInt(32, std::stoi(intLit), true));
         } else if (boolLit != "") {
-            return ConstantInt::get(TheContext, APInt(1, boolLit == "true", true));
+            return ConstantInt::get(TheContext, APInt(1, boolLit != "false", true));
         }
         return logErrorValue("Invalid literal");
     }
     virtual std::string toFormattedString() const override {
-        return intLit + floatLit + boolLit;
+        return floatLit + intLit + boolLit;
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Literal " + intLit + floatLit + boolLit;
+        return offset + branch + "Literal " + floatLit + intLit + boolLit;
     };
 };
 
@@ -726,14 +740,24 @@ struct AssignmentExpressionASTnode : public ExpressionASTnode {
     AssignmentExpressionASTnode(std::string name,
                                 std::unique_ptr<ExpressionASTnode> subExpression) : name(name), subExpression(std::move(subExpression)) {}
     virtual Value* codeGen() override {
-        Value* var = NamedValues[name];
-        if (!var) return logErrorValue("Unknown variable name: " + name);
-
         Value* val = subExpression->codeGen();
-        if (!val) return nullptr;
-
-        Builder.CreateStore(val, var);
-        return val;
+        Type* valType = val->getType();
+        Type* varType;
+        AllocaInst* var;
+        GlobalVariable* gVar;
+        if ((var = NamedValues[name])) {
+            varType = var->getAllocatedType();
+        } else if ((gVar = TheModule->getGlobalVariable(name))) {
+            varType = gVar->getValueType();
+        }
+        if (varType && TypeHierarchy.at(valType) > TypeHierarchy.at(varType)) {
+            return logErrorValue("Cannot narrow type during assignment from " + TypeNames.at(TypeHierarchy.at(valType)) + " to " + TypeNames.at(TypeHierarchy.at(varType)));
+        } else if (var) {
+            return Builder.CreateStore(val, var);
+        } else if (gVar) {
+            return Builder.CreateStore(val, gVar);
+        }
+        return logErrorValue("Undeclared variable: " + name);
     }
     virtual std::string toFormattedString() const override {
         return name + "=" + subExpression->toFormattedString();
@@ -918,7 +942,7 @@ struct DeclarationASTnode : public ASTnode {
                        std::string name,
                        std::vector<std::unique_ptr<ParamASTnode>> paramList,
                        std::unique_ptr<BlockASTnode> block) : type(type), name(name), paramList(std::move(paramList)), block(std::move(block)) {}
-    virtual Function* codeGen() override {
+    virtual Value* codeGen() override {
         if (block) {
             Function* func = TheModule->getFunction(name);
             if (!func) {
@@ -948,24 +972,26 @@ struct DeclarationASTnode : public ASTnode {
             // verifyFunction(*func);
             return func;
         } else {
-            TheModule->getOrInsertGlobal(name, TypeMap.at(type));
-            GlobalVariable* gVar = TheModule->getNamedGlobal(name);
-            gVar->setLinkage(GlobalValue::CommonLinkage);
-            // gVar->setAlignment(MaybeAlign(4));
-            if (type == FLOAT_TOK) {
-                gVar->setInitializer(ConstantFP::get(TypeMap.at(type), 0));
-            } else {
-                gVar->setInitializer(ConstantInt::get(TypeMap.at(type), 0));
+            if (GlobalVariable* gVar = TheModule->getGlobalVariable(name)) {
+                return logErrorValue("Global variable already declared: " + name);
             }
+            GlobalVariable* gVar = new GlobalVariable(
+                *TheModule,
+                TypeMap.at(type),
+                false,
+                GlobalValue::CommonLinkage,
+                Constant::getNullValue(TypeMap.at(type)),
+                name);
+            gVar->setAlignment(MaybeAlign(4));
         }
         return nullptr;
     }
     virtual std::string toFormattedString() const override {
-        return std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toFormattedString();
+        return TypeNames.at(type) + " " + name + "(" + to_string(paramList, ", ") + ")" + block->toFormattedString();
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
-        std::string string = offset + branch + "Declaration " + std::to_string(type) + " " + name;
+        std::string string = offset + branch + "Declaration " + TypeNames.at(type) + " " + name;
         if (block) string += "\n" +
                              to_string(paramList, incOffset) + "\n" +
                              block->toString(incOffset);
@@ -993,11 +1019,11 @@ struct ExternASTnode : public ASTnode {
         return func;
     }
     virtual std::string toFormattedString() const override {
-        return "extern " + std::to_string(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
+        return "extern " + TypeNames.at(type) + " " + name + "(" + to_string(paramList, ", ") + ");";
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
-        return offset + branch + "Extern " + std::to_string(type) + " " + name + "\n" +
+        return offset + branch + "Extern " + TypeNames.at(type) + " " + name + "\n" +
                to_string(paramList, incOffset);
     };
 };
@@ -1037,7 +1063,7 @@ struct Expression {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Expression::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Expression::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // arg_list ::= "," expr arg_list | epsilon
 struct ArgList {
@@ -1068,7 +1094,7 @@ struct Args {
         return args;
     }
 };
-TokenSet Args::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Args::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // ident_body ::= "(" args ")" | epsilon
 struct IdentBody {
@@ -1126,12 +1152,12 @@ struct RvalTerm {
                 return std::move(expression);
                 break;
             }
-            case INT_LIT:
-                intLit = CurTok.lexeme;
-                getNextToken();
-                break;
             case FLOAT_LIT:
                 floatLit = CurTok.lexeme;
+                getNextToken();
+                break;
+            case INT_LIT:
+                intLit = CurTok.lexeme;
                 getNextToken();
                 break;
             case BOOL_LIT:
@@ -1139,10 +1165,10 @@ struct RvalTerm {
                 getNextToken();
                 break;
         }
-        return std::make_unique<LiteralASTnode>(intLit, floatLit, boolLit);
+        return std::make_unique<LiteralASTnode>(floatLit, intLit, boolLit);
     }
 };
-TokenSet RvalTerm::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet RvalTerm::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 struct Rval6List {
     static TokenSet firstSet;
@@ -1154,7 +1180,7 @@ struct Rval6 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_6_list ::= "*" rval_term rval_6_list | "/" rval_term rval_6_list | "%" rval_term rval_6_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval6List::parse() {
@@ -1191,7 +1217,7 @@ struct Rval5 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_5_list ::= "+" rval_6 rval_5_list | "-" rval_6 rval_5_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval5List::parse() {
@@ -1228,7 +1254,7 @@ struct Rval4 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_4_list ::= "<" rval_5 rval_4_list | "<=" rval_5 rval_4_list | ">" rrval_5 rval_4_list | "=" rval_5 rval_4_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval4List::parse() {
@@ -1265,7 +1291,7 @@ struct Rval3 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_3_list ::= "==" rval_4 rval_3_list | "!=" rval_4 rval_3_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval3List::parse() {
@@ -1302,7 +1328,7 @@ struct Rval2 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_2_list ::= "&&" rval_3 rval_2_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval2List::parse() {
@@ -1339,7 +1365,7 @@ struct Rval1 {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse();
 };
-TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, INT_LIT, FLOAT_LIT, BOOL_LIT});
+TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT, BOOL_LIT});
 
 // rval_1_list ::= "||" rval_2 rval_1_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval1List::parse() {
@@ -1401,7 +1427,7 @@ struct ExpressionStatement {
         return std::move(expression);
     }
 };
-TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC});
+TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT_LIT, BOOL_LIT, SC});
 
 // return_stmt ::= "return" expr_stmt
 struct ReturnStatement {
@@ -1455,7 +1481,7 @@ struct Statement {
     static TokenSet firstSet;
     static std::unique_ptr<StatementASTnode> parse();
 };
-TokenSet Statement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC, LBRA, IF, WHILE, RETURN});
+TokenSet Statement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT_LIT, BOOL_LIT, SC, LBRA, IF, WHILE, RETURN});
 
 // while_stmt ::= "while" "(" expr ")" stmt
 struct WhileStatement {
@@ -1505,7 +1531,7 @@ struct StatementList {
         return statements;
     }
 };
-TokenSet StatementList::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, INT_LIT, FLOAT_LIT, BOOL_LIT, SC, LBRA, IF, WHILE, RETURN});
+TokenSet StatementList::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT_LIT, BOOL_LIT, SC, LBRA, IF, WHILE, RETURN});
 
 // local_decl ::= var_type IDENT ";"
 struct LocalDeclaration {
@@ -1765,11 +1791,11 @@ int main(int argc, char** argv) {
 
     // Run the parser now.
     std::unique_ptr<ProgramASTnode> programAST = Parser();
-    fprintf(stderr, "Parsing finished\n");
+    fprintf(stderr, "Parsing finished\n\n");
 
     // llvm::outs() << programAST << "\n";
     fprintf(stderr, "%s\n", programAST->toString().c_str());
-    fprintf(stderr, "AST node printing finished\n");
+    fprintf(stderr, "AST node printing finished\n\n");
 
     programAST->codeGen();
     //********************* Start printing final IR **************************
