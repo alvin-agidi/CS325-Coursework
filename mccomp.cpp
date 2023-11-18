@@ -61,10 +61,10 @@ enum TOKEN_TYPE {
     COMMA = int(','),  // comma
 
     // types
-    FLOAT_TOK = -2,  // "float"
-    INT_TOK = -3,    // "int"
-    BOOL_TOK = -4,   // "bool"
-    VOID_TOK = -5,   // "void"
+    FLOAT_TOK = -3,  // "float"
+    INT_TOK = -4,    // "int"
+    BOOL_TOK = -5,   // "bool"
+    VOID_TOK = -2,   // "void"
 
     // keywords
     EXTERN = -6,   // "extern"
@@ -124,6 +124,10 @@ struct TokenSet {
         return tokenSet.find(element) != tokenSet.end();
     }
 };
+
+TokenSet TYPE_TOKENS = TokenSet({FLOAT_TOK,
+                                 INT_TOK,
+                                 BOOL_TOK});
 
 static std::string IdentifierStr;  // Filled in if IDENT
 static int IntVal;                 // Filled in if INT_LIT
@@ -401,31 +405,44 @@ static Type* getMaxType(Value* val1, Value* val2) {
     return Type::getInt1Ty(TheContext);
 }
 
-static Value* demoteFloat(Value* val, Type* type) {
-    if (type == TypeMap.at(INT_TOK)) {
-        return Builder.CreateFPToSI(val, Type::getInt32Ty(TheContext), "toInt");
-    } else if (type == TypeMap.at(BOOL_TOK)) {
-        return Builder.CreateFPToSI(val, Type::getInt1Ty(TheContext), "toBool");
+// static Value* demoteFloat(Value* val, Type* type) {
+//     if (type == TypeMap.at(INT_TOK)) {
+//         return Builder.CreateFPToSI(val, Type::getInt32Ty(TheContext), "toInt");
+//     } else if (type == TypeMap.at(BOOL_TOK)) {
+//         return Builder.CreateFPToSI(val, Type::getInt1Ty(TheContext), "toBool");
+//     }
+//     return val;
+// };
+
+static Value* promote(Value* val, Type* type) {
+    if (val->getType() == type) {
+        return val;
+    } else if (val->getType() == TypeMap.at(BOOL_TOK) && type == TypeMap.at(INT_TOK)) {
+        return Builder.CreateZExt(val, Type::getInt32Ty(TheContext));
     }
-    return val;
+    return Builder.CreateSIToFP(val, Type::getFloatTy(TheContext));
 };
 
-static std::tuple<Value*, Value*> promoteToFP(Value* val1, Value* val2) {
-    if (!val1->getType()->isFloatTy()) {
-        val1 = Builder.CreateUIToFP(val1, Type::getFloatTy(TheContext));
-    }
-    if (!val2->getType()->isFloatTy()) {
-        val2 = Builder.CreateUIToFP(val2, Type::getFloatTy(TheContext));
-    }
-    return std::make_tuple(val1, val2);
+static std::tuple<Value*, Value*> promote(Value* val1, Value* val2, Type* type) {
+    return std::make_tuple(promote(val1, type), promote(val2, type));
 };
 
-static Value* promoteToFP(Value* val) {
-    if (!val->getType()->isFloatTy()) {
-        val = Builder.CreateUIToFP(val, Type::getFloatTy(TheContext));
-    }
-    return val;
-};
+// static std::tuple<Value*, Value*> promoteToFloat(Value* val1, Value* val2) {
+//     if (!val1->getType()->isFloatTy()) {
+//         val1 = Builder.CreateSIToFP(val1, Type::getFloatTy(TheContext));
+//     }
+//     if (!val2->getType()->isFloatTy()) {
+//         val2 = Builder.CreateSIToFP(val2, Type::getFloatTy(TheContext));
+//     }
+//     return std::make_tuple(val1, val2);
+// };
+
+// static Value* promoteToFloat(Value* val) {
+//     if (!val->getType()->isFloatTy()) {
+//         val = Builder.CreateSIToFP(val, Type::getFloatTy(TheContext));
+//     }
+//     return val;
+// };
 
 static AllocaInst* CreateEntryBlockAlloca(Function* func, Type* type, const std::string& varName) {
     IRBuilder<> TmpB(&func->getEntryBlock(), func->getEntryBlock().begin());
@@ -476,7 +493,7 @@ struct ASTnode {
 //===----------------------------------------------------------------------===//
 // logError* - These are little helper functions for error handling.
 void logError(std::string Str) {
-    fprintf(stderr, "Error: %s\n", Str.c_str());
+    throw std::runtime_error("Error: " + Str + "\n");
 }
 
 std::unique_ptr<ASTnode> logErrorNode(std::string Str) {
@@ -487,6 +504,20 @@ std::unique_ptr<ASTnode> logErrorNode(std::string Str) {
 Value* logErrorValue(std::string Str) {
     logError(Str);
     return nullptr;
+}
+
+ReturnInst* logErrorRetInst(std::string Str) {
+    logError(Str);
+    return nullptr;
+}
+
+static Value* createIsTrue(Value* val, std::string str) {
+    if (val->getType() == TypeMap.at(BOOL_TOK)) {
+        return val;
+    } else if (val->getType() == TypeMap.at(INT_TOK)) {
+        return Builder.CreateICmpNE(val, Builder.getInt32(0), str);
+    }
+    return Builder.CreateFCmpUNE(val, ConstantFP::get(TheContext, APFloat(0.0f)), str);
 }
 
 template <typename ASTnode>
@@ -545,19 +576,7 @@ struct LocalDeclarationASTnode : public ASTnode {
     };
 };
 
-struct StatementASTnode : public ASTnode {
-    StatementASTnode(){};
-    virtual Value* codeGen() = 0;
-    virtual std::string toFormattedString() const { return ""; };
-    virtual std::string toString(std::string offset) const { return ""; };
-};
-
-struct ExpressionASTnode : public StatementASTnode {
-    ExpressionASTnode(){};
-    virtual Value* codeGen() = 0;
-    virtual std::string toFormattedString() const { return ""; };
-    virtual std::string toString(std::string offset) const { return ""; };
-};
+struct ExpressionASTnode : public ASTnode {};
 
 struct BinaryExpressionASTnode : public ExpressionASTnode {
     std::string binOp;
@@ -570,46 +589,69 @@ struct BinaryExpressionASTnode : public ExpressionASTnode {
                             std::unique_ptr<ExpressionASTnode> RHSexpression) : LHSexpression(std::move(LHSexpression)), binOp(binOp), RHSexpression(std::move(RHSexpression)) {}
     virtual Value* codeGen() override {
         Value* LHSval = LHSexpression->codeGen();
-        Value* RHSval = RHSexpression->codeGen();
-        Type* maxType = getMaxType(LHSval, RHSval);
-        if (!LHSval || !RHSval) return nullptr;
-        std::tie(LHSval, RHSval) = promoteToFP(LHSval, RHSval);
-        Value* resVal;
-
-        if (binOp == "||") {
-            Value* LHS = Builder.CreateFCmpUNE(LHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
-            Value* RHS = Builder.CreateFCmpUNE(RHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
-            resVal = Builder.CreateOr(LHS, RHS, "orTmp");
-        } else if (binOp == "&&") {
-            Value* LHS = Builder.CreateFCmpUNE(LHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
-            Value* RHS = Builder.CreateFCmpUNE(RHSval, ConstantFP::get(TheContext, APFloat(0.0f)));
-            resVal = Builder.CreateAnd(LHS, RHS, "andTmp");
-        } else if (binOp == "==") {
-            return Builder.CreateFCmpUEQ(LHSval, RHSval, "eqTmp");
-        } else if (binOp == "!=") {
-            return Builder.CreateFCmpUNE(LHSval, RHSval, "neTmp");
-        } else if (binOp == "<") {
-            return Builder.CreateFCmpULT(LHSval, RHSval, "ltTmp");
-        } else if (binOp == "<=") {
-            return Builder.CreateFCmpULE(LHSval, RHSval, "leTmp");
-        } else if (binOp == ">") {
-            return Builder.CreateFCmpUGT(LHSval, RHSval, "gtTmp");
-        } else if (binOp == ">=") {
-            return Builder.CreateFCmpUGE(LHSval, RHSval, "GETmp");
-        } else if (binOp == "+") {
-            resVal = Builder.CreateFAdd(LHSval, RHSval, "addTmp");
-        } else if (binOp == "-") {
-            resVal = Builder.CreateFSub(LHSval, RHSval, "subTmp");
-        } else if (binOp == "*") {
-            resVal = Builder.CreateFMul(LHSval, RHSval, "mulTmp");
-        } else if (binOp == "/") {
-            resVal = Builder.CreateFDiv(LHSval, RHSval, "divTmp");
-        } else if (binOp == "%") {
-            resVal = Builder.CreateFRem(LHSval, RHSval, "modTmp");
-        } else {
-            return logErrorValue("Invalid binary operator: " + binOp);
+        if (!LHSval) return nullptr;
+        if (binOp == "||" || binOp == "&&") {
+            Function* func = Builder.GetInsertBlock()->getParent();
+            BasicBlock* rhsBB = BasicBlock::Create(TheContext, "evalRHS", func);
+            BasicBlock* endBB = BasicBlock::Create(TheContext, "endBinary", func);
+            Value* resVal = createIsTrue(LHSval, "lhsTmp");
+            AllocaInst* alloca = Builder.CreateAlloca(resVal->getType(), resVal);
+            NamedValues[alloca->getName().str()] = alloca;
+            if (binOp == "||") {
+                Builder.CreateCondBr(resVal, endBB, rhsBB);
+            } else {
+                Builder.CreateCondBr(resVal, rhsBB, endBB);
+            }
+            Builder.SetInsertPoint(rhsBB);
+            Value* RHSval = RHSexpression->codeGen();
+            if (!RHSval) return nullptr;
+            resVal = createIsTrue(RHSval, "rhsTmp");
+            AllocaInst* var = NamedValues[alloca->getName().str()];
+            Builder.CreateStore(resVal, var);
+            Builder.CreateBr(endBB);
+            rhsBB = Builder.GetInsertBlock();
+            Builder.SetInsertPoint(endBB);
+            return Builder.CreateLoad(var->getAllocatedType(), var, alloca->getName().str());
         }
-        return demoteFloat(resVal, maxType);
+        Value* RHSval = RHSexpression->codeGen();
+        if (!RHSval) return nullptr;
+        Type* maxType = getMaxType(LHSval, RHSval);
+        std::tie(LHSval, RHSval) = promote(LHSval, RHSval, maxType);
+        if (binOp == "==") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUEQ(LHSval, RHSval, "eqTmp");
+            return Builder.CreateICmpEQ(LHSval, RHSval, "eqTmp");
+        } else if (binOp == "!=") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUNE(LHSval, RHSval, "neTmp");
+            return Builder.CreateICmpNE(LHSval, RHSval, "eqTmp");
+        } else if (binOp == "<") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpULT(LHSval, RHSval, "ltTmp");
+            return Builder.CreateICmpSLT(LHSval, RHSval, "eqTmp");
+        } else if (binOp == "<=") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpULE(LHSval, RHSval, "leTmp");
+            return Builder.CreateICmpSLE(LHSval, RHSval, "eqTmp");
+        } else if (binOp == ">") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUGT(LHSval, RHSval, "gtTmp");
+            return Builder.CreateICmpSGT(LHSval, RHSval, "eqTmp");
+        } else if (binOp == ">=") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUGE(LHSval, RHSval, "geTmp");
+            return Builder.CreateICmpSGE(LHSval, RHSval, "eqTmp");
+        } else if (binOp == "+") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFAdd(LHSval, RHSval, "addTmp");
+            return Builder.CreateAdd(LHSval, RHSval, "addTmp");
+        } else if (binOp == "-") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFSub(LHSval, RHSval, "subTmp");
+            return Builder.CreateSub(LHSval, RHSval, "subTmp");
+        } else if (binOp == "*") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFMul(LHSval, RHSval, "mulTmp");
+            return Builder.CreateMul(LHSval, RHSval, "mulTmp");
+        } else if (binOp == "/") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFDiv(LHSval, RHSval, "divTmp");
+            return Builder.CreateSDiv(LHSval, RHSval, "divTmp");
+        } else if (binOp == "%") {
+            if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFRem(LHSval, RHSval, "remTmp");
+            return Builder.CreateSRem(LHSval, RHSval, "remTmp");
+        }
+        return logErrorValue("Invalid binary operator: " + binOp);
     }
     virtual std::string toFormattedString() const override {
         return LHSexpression->toFormattedString() + binOp + RHSexpression->toFormattedString();
@@ -631,12 +673,15 @@ struct UnaryExpressionASTnode : public ExpressionASTnode {
     virtual Value* codeGen() override {
         Value* val = subExpression->codeGen();
         if (!val) return nullptr;
-        val = promoteToFP(val);
 
         if (op == "-") {
-            return Builder.CreateFNeg(val, "negTmp");
+            if (val->getType() == TypeMap.at(FLOAT_TOK)) return Builder.CreateFNeg(val, "negTmp");
+            if (val->getType() == TypeMap.at(INT_TOK)) return Builder.CreateNeg(val, "negTmp");
+            return Builder.CreateNot(val, "negTmp");
         } else if (op == "!") {
-            return Builder.CreateFCmpUEQ(val, ConstantFP::get(TheContext, APFloat(0.0f)), "notTmp");
+            if (val->getType() == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUEQ(val, ConstantFP::get(TheContext, APFloat(0.0f)), "notTmp");
+            if (val->getType() == TypeMap.at(INT_TOK)) return Builder.CreateICmpEQ(val, Builder.getInt32(0), "notTmp");
+            return Builder.CreateICmpEQ(val, Builder.getInt1(0), "notTmp");
         }
         return logErrorValue("Undeclared operator: " + op);
     }
@@ -655,8 +700,8 @@ struct VariableASTnode : public ExpressionASTnode {
     VariableASTnode(){};
     VariableASTnode(std::string name) : name(name) {}
     virtual Value* codeGen() override {
-        if (AllocaInst* val = NamedValues[name]) {
-            return Builder.CreateLoad(val->getAllocatedType(), val, name);
+        if (AllocaInst* var = NamedValues[name]) {
+            return Builder.CreateLoad(var->getAllocatedType(), var, name);
         } else if (GlobalVariable* gVar = TheModule->getGlobalVariable(name)) {
             return Builder.CreateLoad(gVar->getValueType(), gVar, name);
         }
@@ -717,9 +762,9 @@ struct LiteralASTnode : public ExpressionASTnode {
         if (floatLit != "") {
             return ConstantFP::get(TheContext, APFloat(std::stof(floatLit)));
         } else if (intLit != "") {
-            return ConstantInt::get(TheContext, APInt(32, std::stoi(intLit), true));
+            return Builder.getInt32(std::stoi(intLit));
         } else if (boolLit != "") {
-            return ConstantInt::get(TheContext, APInt(1, boolLit != "false", true));
+            return Builder.getInt1(boolLit != "false");
         }
         return logErrorValue("Invalid literal");
     }
@@ -749,15 +794,16 @@ struct AssignmentExpressionASTnode : public ExpressionASTnode {
             varType = var->getAllocatedType();
         } else if ((gVar = TheModule->getGlobalVariable(name))) {
             varType = gVar->getValueType();
+        } else {
+            return logErrorValue("Undeclared variable: " + name);
         }
-        if (varType && TypeHierarchy.at(valType) > TypeHierarchy.at(varType)) {
-            return logErrorValue("Cannot narrow type during assignment from " + TypeNames.at(TypeHierarchy.at(valType)) + " to " + TypeNames.at(TypeHierarchy.at(varType)));
-        } else if (var) {
-            return Builder.CreateStore(val, var);
+        val = promote(val, varType);
+        if (var) {
+            Builder.CreateStore(val, var);
         } else if (gVar) {
-            return Builder.CreateStore(val, gVar);
+            Builder.CreateStore(val, gVar);
         }
-        return logErrorValue("Undeclared variable: " + name);
+        return val;
     }
     virtual std::string toFormattedString() const override {
         return name + "=" + subExpression->toFormattedString();
@@ -769,27 +815,51 @@ struct AssignmentExpressionASTnode : public ExpressionASTnode {
     };
 };
 
+struct StatementASTnode : public ASTnode {
+    virtual ReturnInst* codeGen() { return nullptr; };
+    virtual ReturnInst* codeGen(Type* funcReturnType) = 0;
+};
+
+struct ExpressionStatementASTnode : public StatementASTnode {
+    std::unique_ptr<ExpressionASTnode> expression;
+
+    ExpressionStatementASTnode(){};
+    ExpressionStatementASTnode(std::unique_ptr<ExpressionASTnode> expression) : expression(std::move(expression)) {}
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
+        if (expression) {
+            expression->codeGen();
+        }
+        return nullptr;
+    }
+    virtual std::string toFormattedString() const override {
+        return expression->toFormattedString();
+    };
+    virtual std::string toString(std::string offset) const override {
+        std::string string = "";
+        if (expression) string += expression->toString(offset);
+        return string;
+    };
+};
+
 struct ReturnStatementASTnode : public StatementASTnode {
     std::unique_ptr<ExpressionASTnode> expression;
 
     ReturnStatementASTnode(){};
     ReturnStatementASTnode(std::unique_ptr<ExpressionASTnode> expression) : expression(std::move(expression)) {}
-    virtual Value* codeGen() override {
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
         if (expression) {
             Value* val = expression->codeGen();
             return Builder.CreateRet(val);
-        }
+        };
         return Builder.CreateRetVoid();
-    }
+    };
     virtual std::string toFormattedString() const override {
         return "return " + expression->toFormattedString();
     };
     virtual std::string toString(std::string offset) const override {
         std::string incOffset = incrementOffset(offset);
         std::string string = offset + branch + "Return";
-        if (expression) {
-            string += "\n" + expression->toString(incOffset);
-        }
+        if (expression) string += "\n" + expression->toString(incOffset);
         return string;
     };
 };
@@ -801,12 +871,20 @@ struct BlockASTnode : public StatementASTnode {
     BlockASTnode(){};
     BlockASTnode(std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarationList,
                  std::vector<std::unique_ptr<StatementASTnode>> statementList) : localDeclarationList(std::move(localDeclarationList)), statementList(std::move(statementList)) {}
-    virtual Value* codeGen() override {
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
         for (std::unique_ptr<LocalDeclarationASTnode>& localDecl : localDeclarationList) {
             localDecl->codeGen();
         }
         for (std::unique_ptr<StatementASTnode>& stmt : statementList) {
-            stmt->codeGen();
+            if (ReturnInst* ret = stmt->codeGen(funcReturnType)) {
+                Type* retType = ret->getReturnValue()->getType();
+                if (funcReturnType && !ret->getReturnValue()) {
+                    return logErrorRetInst("Missing return for function with " + TypeNames.at(TypeHierarchy.at(funcReturnType)) + " return type");
+                } else if (funcReturnType && TypeHierarchy.at(retType) > TypeHierarchy.at(funcReturnType)) {
+                    return logErrorRetInst("Cannot narrow type during return from " + TypeNames.at(TypeHierarchy.at(retType)) + " to " + TypeNames.at(TypeHierarchy.at(funcReturnType)));
+                }
+                return ret;
+            }
         }
         return nullptr;
     }
@@ -830,21 +908,19 @@ struct WhileStatementASTnode : public StatementASTnode {
     WhileStatementASTnode(){};
     WhileStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
                           std::unique_ptr<StatementASTnode> statement) : expression(std::move(expression)), statement(std::move(statement)) {}
-    virtual Value* codeGen() override {
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
+        Value* condVal = expression->codeGen();
+        if (!condVal) return nullptr;
+        Value* compVal = createIsTrue(condVal, "whileCond");
         Function* func = Builder.GetInsertBlock()->getParent();
         BasicBlock* trueBB = BasicBlock::Create(TheContext, "whileTrue", func);
         BasicBlock* endBB = BasicBlock::Create(TheContext, "endWhile", func);
-        Value* condVal = expression->codeGen();
-        if (!condVal) return nullptr;
-        condVal = promoteToFP(condVal);
-        Value* compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "whileCond");
         Builder.CreateCondBr(compVal, trueBB, endBB);
         Builder.SetInsertPoint(trueBB);
-        Value* trueVal = statement->codeGen();
+        ReturnInst* trueVal = statement->codeGen(funcReturnType);
         condVal = expression->codeGen();
         if (!condVal) return nullptr;
-        condVal = promoteToFP(condVal);
-        compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "whileCond");
+        compVal = createIsTrue(condVal, "whileCond");
         Builder.CreateCondBr(compVal, trueBB, endBB);
         trueBB = Builder.GetInsertBlock();
         Builder.SetInsertPoint(endBB);
@@ -866,8 +942,8 @@ struct ElseStatementASTnode : public StatementASTnode {
 
     ElseStatementASTnode(){};
     ElseStatementASTnode(std::unique_ptr<BlockASTnode> block) : block(std::move(block)) {}
-    virtual Value* codeGen() override {
-        return block->codeGen();
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
+        return block->codeGen(funcReturnType);
     }
     virtual std::string toFormattedString() const override {
         return " else" + block->toFormattedString();
@@ -888,30 +964,27 @@ struct IfStatementASTnode : public StatementASTnode {
     IfStatementASTnode(std::unique_ptr<ExpressionASTnode> expression,
                        std::unique_ptr<BlockASTnode> block,
                        std::unique_ptr<ElseStatementASTnode> elseStatement) : expression(std::move(expression)), block(std::move(block)), elseStatement(std::move(elseStatement)) {}
-    virtual Value* codeGen() override {
+    virtual ReturnInst* codeGen(Type* funcReturnType) override {
+        Value* condVal = expression->codeGen();
+        if (!condVal) return nullptr;
+        Value* compVal = createIsTrue(condVal, "ifCond");
         Function* func = Builder.GetInsertBlock()->getParent();
         BasicBlock* trueBB = BasicBlock::Create(TheContext, "ifTrue", func);
         BasicBlock* falseBB;
-        if (elseStatement->block) {
-            falseBB = BasicBlock::Create(TheContext, "else", func);
-        }
+        if (elseStatement->block) falseBB = BasicBlock::Create(TheContext, "else", func);
         BasicBlock* endBB = BasicBlock::Create(TheContext, "endIf", func);
-        Value* condVal = expression->codeGen();
-        if (!condVal) return nullptr;
-        condVal = promoteToFP(condVal);
-        Value* compVal = Builder.CreateFCmpUNE(condVal, ConstantFP::get(TheContext, APFloat(0.0f)), "ifCond");
         if (elseStatement->block) {
             Builder.CreateCondBr(compVal, trueBB, falseBB);
         } else {
             Builder.CreateCondBr(compVal, trueBB, endBB);
         }
         Builder.SetInsertPoint(trueBB);
-        Value* trueVal = block->codeGen();
+        ReturnInst* trueVal = block->codeGen(funcReturnType);
         Builder.CreateBr(endBB);
         trueBB = Builder.GetInsertBlock();
         if (elseStatement->block) {
             Builder.SetInsertPoint(falseBB);
-            Value* falseVal = elseStatement->codeGen();
+            ReturnInst* falseVal = elseStatement->codeGen(funcReturnType);
             Builder.CreateBr(endBB);
             falseBB = Builder.GetInsertBlock();
         }
@@ -967,9 +1040,12 @@ struct DeclarationASTnode : public ASTnode {
                 Builder.CreateStore(&arg, alloca);
                 NamedValues[std::string(arg.getName())] = alloca;
             }
-            block->codeGen();
 
-            // verifyFunction(*func);
+            ReturnInst* ret = block->codeGen(func->getReturnType());
+            if (func->getReturnType() && !ret) {
+                return logErrorValue("Missing return for function with " + TypeNames.at(TypeHierarchy.at(func->getReturnType())) + " return type");
+            }
+
             return func;
         } else {
             if (GlobalVariable* gVar = TheModule->getGlobalVariable(name)) {
@@ -1058,6 +1134,12 @@ struct ProgramASTnode : public ASTnode {
 //===----------------------------------------------------------------------===//
 // Parser
 //===----------------------------------------------------------------------===//
+
+void checkToken(std::string errMsg, TokenSet acceptableTokens) {
+    if (!acceptableTokens.contains(CurTok.type)) {
+        logError(errMsg);
+    }
+}
 
 struct Expression {
     static TokenSet firstSet;
@@ -1417,14 +1499,14 @@ std::unique_ptr<ExpressionASTnode> Expression::parse() {
 // expr_stmt ::= expr ";" | ";"
 struct ExpressionStatement {
     static TokenSet firstSet;
-    static std::unique_ptr<ExpressionASTnode> parse() {
+    static std::unique_ptr<ExpressionStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing expr stmt", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<ExpressionASTnode> expression;
         if (CurTok.type != SC) {
             expression = std::move(Expression::parse());
         }
         getNextToken();
-        return std::move(expression);
+        return std::make_unique<ExpressionStatementASTnode>(std::move(expression));
     }
 };
 TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT_LIT, BOOL_LIT, SC});
@@ -1435,7 +1517,7 @@ struct ReturnStatement {
     static std::unique_ptr<ReturnStatementASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing return", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
-        std::unique_ptr<ExpressionASTnode> expression = std::move(ExpressionStatement::parse());
+        std::unique_ptr<ExpressionASTnode> expression = std::move(ExpressionStatement::parse()->expression);
         return std::make_unique<ReturnStatementASTnode>(std::move(expression));
     }
 };
@@ -1694,8 +1776,10 @@ struct Extern {
     static std::unique_ptr<ExternASTnode> parse() {
         fprintf(stderr, "%s: %s with type %d\n", "Parsing extern", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();  // eat extern.
+        checkToken("Unexpected token when parsing type", TYPE_TOKENS);
         int type = CurTok.type;
         getNextToken();  // eat type.
+        checkToken("Unexpected token when parsing type", TYPE_TOKENS);
         std::string ident = CurTok.lexeme;
         getNextToken();  // eat ident.
         getNextToken();
@@ -1764,55 +1848,59 @@ llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const ASTnode& ast) {
 //===----------------------------------------------------------------------===//
 
 int main(int argc, char** argv) {
-    if (argc == 2) {
-        pFile = fopen(argv[1], "r");
-        if (pFile == NULL)
-            perror("Error opening file");
-    } else {
-        std::cout << "Usage: ./code InputFile\n";
-        return 1;
+    try {
+        if (argc == 2) {
+            pFile = fopen(argv[1], "r");
+            if (pFile == NULL)
+                perror("Error opening file");
+        } else {
+            std::cout << "Usage: ./code InputFile\n";
+            return 1;
+        }
+
+        lineNo = 1;
+        columnNo = 1;
+
+        // get the first token
+        getNextToken();
+        // while (CurTok.type != EOF_TOK) {
+        //     fprintf(stderr, "Token: %s with type %d\n", CurTok.lexeme.c_str(),
+        //             CurTok.type);
+        //     getNextToken();
+        // }
+        // fprintf(stderr, "Lexer Finished\n");
+
+        // Make the module, which holds all the code.
+        TheModule = std::make_unique<Module>("mini-c", TheContext);
+
+        // Run the parser now.
+        std::unique_ptr<ProgramASTnode> programAST = Parser();
+        fprintf(stderr, "Parsing finished\n\n");
+
+        // llvm::outs() << programAST << "\n";
+        fprintf(stderr, "%s\n", programAST->toString().c_str());
+        fprintf(stderr, "AST node printing finished\n\n");
+
+        programAST->codeGen();
+        //********************* Start printing final IR **************************
+        // Print out all of the generated code into a file called output.ll
+        auto Filename = "output.ll";
+        std::error_code EC;
+        raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
+
+        if (EC) {
+            errs() << "Could not open file: " << EC.message();
+            return 1;
+        }
+        TheModule->print(errs(), nullptr);  // print IR to terminal
+        TheModule->print(dest, nullptr);
+        //********************* End printing final IR ****************************
+        fprintf(stderr, "IR Code Generation finished\n");
+
+        fclose(pFile);  // close the file that contains the code that was parsed
+        return 0;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "%s\n", e.what());
+        std::exit(EXIT_FAILURE);
     }
-
-    // initialize line number and column numbers to zero
-    lineNo = 1;
-    columnNo = 1;
-
-    // get the first token
-    getNextToken();
-    // while (CurTok.type != EOF_TOK) {
-    //     fprintf(stderr, "Token: %s with type %d\n", CurTok.lexeme.c_str(),
-    //             CurTok.type);
-    //     getNextToken();
-    // }
-    // fprintf(stderr, "Lexer Finished\n");
-
-    // Make the module, which holds all the code.
-    TheModule = std::make_unique<Module>("mini-c", TheContext);
-
-    // Run the parser now.
-    std::unique_ptr<ProgramASTnode> programAST = Parser();
-    fprintf(stderr, "Parsing finished\n\n");
-
-    // llvm::outs() << programAST << "\n";
-    fprintf(stderr, "%s\n", programAST->toString().c_str());
-    fprintf(stderr, "AST node printing finished\n\n");
-
-    programAST->codeGen();
-    //********************* Start printing final IR **************************
-    // Print out all of the generated code into a file called output.ll
-    auto Filename = "output.ll";
-    std::error_code EC;
-    raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
-
-    if (EC) {
-        errs() << "Could not open file: " << EC.message();
-        return 1;
-    }
-    TheModule->print(errs(), nullptr);  // print IR to terminal
-    TheModule->print(dest, nullptr);
-    //********************* End printing final IR ****************************
-    fprintf(stderr, "IR Code Generation finished\n");
-
-    fclose(pFile);  // close the file that contains the code that was parsed
-    return 0;
 }
