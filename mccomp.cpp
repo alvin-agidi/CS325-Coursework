@@ -125,9 +125,8 @@ struct TokenSet {
     }
 };
 
-TokenSet TYPE_TOKENS = TokenSet({FLOAT_TOK,
-                                 INT_TOK,
-                                 BOOL_TOK});
+TokenSet TYPE_TOKENS = TokenSet({FLOAT_TOK, INT_TOK, BOOL_TOK, VOID_TOK});
+TokenSet VAR_TYPE_TOKENS = TokenSet({FLOAT_TOK, INT_TOK, BOOL_TOK});
 
 static std::string IdentifierStr;  // Filled in if IDENT
 static int IntVal;                 // Filled in if INT_LIT
@@ -405,7 +404,7 @@ static Type* getMaxType(Value* val1, Value* val2) {
     return Type::getInt1Ty(TheContext);
 }
 
-// static Value* demoteFloat(Value* val, Type* type) {
+// static Value* narrowFloat(Value* val, Type* type) {
 //     if (type == TypeMap.at(INT_TOK)) {
 //         return Builder.CreateFPToSI(val, Type::getInt32Ty(TheContext), "toInt");
 //     } else if (type == TypeMap.at(BOOL_TOK)) {
@@ -414,7 +413,7 @@ static Type* getMaxType(Value* val1, Value* val2) {
 //     return val;
 // };
 
-static Value* promote(Value* val, Type* type) {
+static Value* widen(Value* val, Type* type) {
     if (val->getType() == type) {
         return val;
     } else if (val->getType() == TypeMap.at(BOOL_TOK) && type == TypeMap.at(INT_TOK)) {
@@ -423,11 +422,11 @@ static Value* promote(Value* val, Type* type) {
     return Builder.CreateSIToFP(val, Type::getFloatTy(TheContext));
 };
 
-static std::tuple<Value*, Value*> promote(Value* val1, Value* val2, Type* type) {
-    return std::make_tuple(promote(val1, type), promote(val2, type));
+static std::tuple<Value*, Value*> widen(Value* val1, Value* val2, Type* type) {
+    return std::make_tuple(widen(val1, type), widen(val2, type));
 };
 
-// static std::tuple<Value*, Value*> promoteToFloat(Value* val1, Value* val2) {
+// static std::tuple<Value*, Value*> widenToFloat(Value* val1, Value* val2) {
 //     if (!val1->getType()->isFloatTy()) {
 //         val1 = Builder.CreateSIToFP(val1, Type::getFloatTy(TheContext));
 //     }
@@ -437,7 +436,7 @@ static std::tuple<Value*, Value*> promote(Value* val1, Value* val2, Type* type) 
 //     return std::make_tuple(val1, val2);
 // };
 
-// static Value* promoteToFloat(Value* val) {
+// static Value* widenToFloat(Value* val) {
 //     if (!val->getType()->isFloatTy()) {
 //         val = Builder.CreateSIToFP(val, Type::getFloatTy(TheContext));
 //     }
@@ -616,7 +615,7 @@ struct BinaryExpressionASTnode : public ExpressionASTnode {
         Value* RHSval = RHSexpression->codeGen();
         if (!RHSval) return nullptr;
         Type* maxType = getMaxType(LHSval, RHSval);
-        std::tie(LHSval, RHSval) = promote(LHSval, RHSval, maxType);
+        std::tie(LHSval, RHSval) = widen(LHSval, RHSval, maxType);
         if (binOp == "==") {
             if (maxType == TypeMap.at(FLOAT_TOK)) return Builder.CreateFCmpUEQ(LHSval, RHSval, "eqTmp");
             return Builder.CreateICmpEQ(LHSval, RHSval, "eqTmp");
@@ -797,7 +796,7 @@ struct AssignmentExpressionASTnode : public ExpressionASTnode {
         } else {
             return logErrorValue("Undeclared variable: " + name);
         }
-        val = promote(val, varType);
+        val = widen(val, varType);
         if (var) {
             Builder.CreateStore(val, var);
         } else if (gVar) {
@@ -1135,10 +1134,18 @@ struct ProgramASTnode : public ASTnode {
 // Parser
 //===----------------------------------------------------------------------===//
 
-void checkToken(std::string errMsg, TokenSet acceptableTokens) {
+void checkToken(std::string expectedType, TokenSet acceptableTokens, bool consume = false) {
     if (!acceptableTokens.contains(CurTok.type)) {
-        logError(errMsg);
+        logError("Unexpected token while parsing " + expectedType + ": " + CurTok.lexeme + " (line " + std::to_string(CurTok.lineNo) + ")");
     }
+    if (consume) getNextToken();
+}
+
+void checkToken(std::string expectedType, int acceptableType, bool consume = false) {
+    if (CurTok.type != acceptableType) {
+        logError("Unexpected token while parsing " + expectedType + ": " + CurTok.lexeme + " (line " + std::to_string(CurTok.lineNo) + ")");
+    }
+    if (consume) getNextToken();
 }
 
 struct Expression {
@@ -1151,7 +1158,7 @@ TokenSet Expression::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, IN
 struct ArgList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing arg list", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "arg list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> argList;
         while (firstSet.contains(CurTok.type)) {
             getNextToken();
@@ -1166,7 +1173,7 @@ TokenSet ArgList::firstSet = TokenSet({COMMA});
 struct Args {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing args", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "args", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
         if (Expression::firstSet.contains(CurTok.type)) {
             args.emplace_back(std::move(Expression::parse()));
@@ -1182,12 +1189,12 @@ TokenSet Args::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT,
 struct IdentBody {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExpressionASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing identBody", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "identBody", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExpressionASTnode>> args;
         if (firstSet.contains(CurTok.type)) {
             getNextToken();
             args = Args::parse();
-            getNextToken();
+            checkToken("right parentesis", RPAR, true);
         }
         return args;
     }
@@ -1202,7 +1209,7 @@ TokenSet IdentBody::firstSet = TokenSet({LPAR});
 struct RvalTerm {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing rvalterm", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rvalterm", CurTok.lexeme.c_str(), CurTok.type);
         std::string intLit;
         std::string floatLit;
         std::string boolLit;
@@ -1230,7 +1237,7 @@ struct RvalTerm {
             case LPAR: {
                 getNextToken();
                 std::unique_ptr<ExpressionASTnode> expression = std::move(Expression::parse());
-                getNextToken();
+                checkToken("right parentesis", RPAR, true);
                 return std::move(expression);
                 break;
             }
@@ -1266,7 +1273,7 @@ TokenSet Rval6::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_6_list ::= "*" rval_term rval_6_list | "/" rval_term rval_6_list | "%" rval_term rval_6_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval6List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval6list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval6List;
     while (Rval6List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1279,7 +1286,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval6List::parse() {
 
 // rval_6 ::= rval_term rval_6_list
 std::unique_ptr<ExpressionASTnode> Rval6::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval6", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval6", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", RvalTerm::firstSet);
     std::unique_ptr<ExpressionASTnode> root = RvalTerm::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval6List = Rval6List::parse();
     for (auto it = rval6List.begin(); it != rval6List.end(); ++it) {
@@ -1303,7 +1311,7 @@ TokenSet Rval5::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_5_list ::= "+" rval_6 rval_5_list | "-" rval_6 rval_5_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval5List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval5list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval5List;
     while (Rval5List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1316,7 +1324,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval5List::parse() {
 
 // rval_5 ::= rval_6 rval_5_list
 std::unique_ptr<ExpressionASTnode> Rval5::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval5", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval5", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", Rval6::firstSet);
     std::unique_ptr<ExpressionASTnode> root = Rval6::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval5List = Rval5List::parse();
     for (auto it = rval5List.begin(); it != rval5List.end(); ++it) {
@@ -1340,7 +1349,7 @@ TokenSet Rval4::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_4_list ::= "<" rval_5 rval_4_list | "<=" rval_5 rval_4_list | ">" rrval_5 rval_4_list | "=" rval_5 rval_4_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval4List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval4list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval4List;
     while (Rval4List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1353,7 +1362,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval4List::parse() {
 
 // rval_4 ::= rval_5 rval_4_list
 std::unique_ptr<ExpressionASTnode> Rval4::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval4", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval4", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", Rval5::firstSet);
     std::unique_ptr<ExpressionASTnode> root = Rval5::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval4List = Rval4List::parse();
     for (auto it = rval4List.begin(); it != rval4List.end(); ++it) {
@@ -1377,7 +1387,7 @@ TokenSet Rval3::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_3_list ::= "==" rval_4 rval_3_list | "!=" rval_4 rval_3_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval3List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval3list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval3List;
     while (Rval3List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1390,7 +1400,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval3List::parse() {
 
 // rval_3 ::= rval_4 rval_3_list
 std::unique_ptr<ExpressionASTnode> Rval3::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval3", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval3", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", Rval4::firstSet);
     std::unique_ptr<ExpressionASTnode> root = Rval4::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval3List = Rval3List::parse();
     for (auto it = rval3List.begin(); it != rval3List.end(); ++it) {
@@ -1414,7 +1425,7 @@ TokenSet Rval2::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_2_list ::= "&&" rval_3 rval_2_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval2List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval2list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval2List;
     while (Rval2List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1427,7 +1438,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval2List::parse() {
 
 // rval_2 ::= rval_3 rval_2_list
 std::unique_ptr<ExpressionASTnode> Rval2::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval2", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval2", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", Rval3::firstSet);
     std::unique_ptr<ExpressionASTnode> root = Rval3::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval2List = Rval2List::parse();
     for (auto it = rval2List.begin(); it != rval2List.end(); ++it) {
@@ -1451,7 +1463,7 @@ TokenSet Rval1::firstSet = TokenSet({MINUS, NOT, LPAR, IDENT, FLOAT_LIT, INT_LIT
 
 // rval_1_list ::= "||" rval_2 rval_1_list | epsilon
 std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval1List::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1list", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval1list", CurTok.lexeme.c_str(), CurTok.type);
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval1List;
     while (Rval1List::firstSet.contains(CurTok.type)) {
         std::string binOp = CurTok.lexeme;
@@ -1464,7 +1476,8 @@ std::vector<std::unique_ptr<BinaryExpressionASTnode>> Rval1List::parse() {
 
 // rval_1 ::= rval_2 rval_1_list
 std::unique_ptr<ExpressionASTnode> Rval1::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing rval1", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "rval1", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("term", Rval2::firstSet);
     std::unique_ptr<ExpressionASTnode> root = Rval2::parse();
     std::vector<std::unique_ptr<BinaryExpressionASTnode>> rval1List = Rval1List::parse();
     for (auto it = rval1List.begin(); it != rval1List.end(); ++it) {
@@ -1476,7 +1489,7 @@ std::unique_ptr<ExpressionASTnode> Rval1::parse() {
 
 // expr ::= IDENT "=" expr | rval_1
 std::unique_ptr<ExpressionASTnode> Expression::parse() {
-    fprintf(stderr, "%s: %s with type %d (line %d, col %d)\n", "Parsing expr", CurTok.lexeme.c_str(), CurTok.type, CurTok.lineNo, CurTok.columnNo);
+    fprintf(stderr, "%s parse: \"%s\" with type %d (line %d, col %d)\n", "expr", CurTok.lexeme.c_str(), CurTok.type, CurTok.lineNo, CurTok.columnNo);
     TOKEN identTok;
     std::unique_ptr<ExpressionASTnode> expression;
     if (CurTok.type == IDENT) {
@@ -1500,12 +1513,12 @@ std::unique_ptr<ExpressionASTnode> Expression::parse() {
 struct ExpressionStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ExpressionStatementASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing expr stmt", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "expr stmt", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<ExpressionASTnode> expression;
         if (CurTok.type != SC) {
             expression = std::move(Expression::parse());
         }
-        getNextToken();
+        checkToken("semicolon", SC, true);
         return std::make_unique<ExpressionStatementASTnode>(std::move(expression));
     }
 };
@@ -1515,7 +1528,7 @@ TokenSet ExpressionStatement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOA
 struct ReturnStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ReturnStatementASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing return", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "return", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
         std::unique_ptr<ExpressionASTnode> expression = std::move(ExpressionStatement::parse()->expression);
         return std::make_unique<ReturnStatementASTnode>(std::move(expression));
@@ -1533,7 +1546,7 @@ TokenSet Block::firstSet = TokenSet({LBRA});
 struct ElseStatement {
     static TokenSet firstSet;
     static std::unique_ptr<ElseStatementASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing else", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "else", CurTok.lexeme.c_str(), CurTok.type);
         std::unique_ptr<BlockASTnode> block;
         if (firstSet.contains(CurTok.type)) {
             getNextToken();
@@ -1548,11 +1561,11 @@ TokenSet ElseStatement::firstSet = TokenSet({ELSE});
 struct IfStatement {
     static TokenSet firstSet;
     static std::unique_ptr<IfStatementASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing if", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "if", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
-        getNextToken();
+        checkToken("left parenthesis", LPAR, true);
         std::unique_ptr<ExpressionASTnode> expression = Expression::parse();
-        getNextToken();
+        checkToken("right parenthesis", RPAR, true);
         std::unique_ptr<BlockASTnode> block = Block::parse();
         std::unique_ptr<ElseStatementASTnode> elseStatement = ElseStatement::parse();
         return std::make_unique<IfStatementASTnode>(std::move(expression), std::move(block), std::move(elseStatement));
@@ -1569,11 +1582,11 @@ TokenSet Statement::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT, INT
 struct WhileStatement {
     static TokenSet firstSet;
     static std::unique_ptr<WhileStatementASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing while", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "while", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();
-        getNextToken();
+        checkToken("left parenthesis", LPAR, true);
         std::unique_ptr<ExpressionASTnode> expression = Expression::parse();
-        getNextToken();
+        checkToken("right parenthesis", RPAR, true);
         std::unique_ptr<StatementASTnode> statement = Statement::parse();
         return std::make_unique<WhileStatementASTnode>(std::move(expression), std::move(statement));
     }
@@ -1585,8 +1598,9 @@ TokenSet WhileStatement::firstSet = TokenSet({WHILE});
 //      | while_stmt
 //      | if_stmt
 std::unique_ptr<StatementASTnode> Statement::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt", CurTok.lexeme.c_str(), CurTok.type);
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "stmt", CurTok.lexeme.c_str(), CurTok.type);
     std::unique_ptr<StatementASTnode> statement;
+    checkToken("if, return, while or expression", Statement::firstSet);
     if (Block::firstSet.contains(CurTok.type)) {
         statement = Block::parse();
     } else if (WhileStatement::firstSet.contains(CurTok.type)) {
@@ -1605,7 +1619,7 @@ std::unique_ptr<StatementASTnode> Statement::parse() {
 struct StatementList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<StatementASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing stmt list", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "stmt list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<StatementASTnode>> statements;
         while (firstSet.contains(CurTok.type)) {
             statements.emplace_back(std::move(Statement::parse()));
@@ -1619,12 +1633,14 @@ TokenSet StatementList::firstSet = TokenSet({IDENT, MINUS, NOT, LPAR, FLOAT_LIT,
 struct LocalDeclaration {
     static TokenSet firstSet;
     static std::unique_ptr<LocalDeclarationASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "local decl", CurTok.lexeme.c_str(), CurTok.type);
+        checkToken("variable type", LocalDeclaration::firstSet);
         int type = CurTok.type;
         getNextToken();  // eat type.
+        checkToken("identifier", IDENT);
         std::string ident = CurTok.lexeme;
         getNextToken();
-        getNextToken();
+        checkToken("semicolon", SC, true);
         return std::make_unique<LocalDeclarationASTnode>(std::move(type), std::move(ident));
     }
 };
@@ -1634,7 +1650,7 @@ TokenSet LocalDeclaration::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct LocalDeclarationList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<LocalDeclarationASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing local decl list", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "local decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations;
         while (firstSet.contains(CurTok.type)) {
             localDeclarations.emplace_back(std::move(LocalDeclaration::parse()));
@@ -1646,21 +1662,23 @@ TokenSet LocalDeclarationList::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK
 
 // block ::= "{" local_decl_list stmt_list "}"
 std::unique_ptr<BlockASTnode> Block::parse() {
-    fprintf(stderr, "%s: %s with type %d\n", "Parsing block", CurTok.lexeme.c_str(), CurTok.type);
-    getNextToken();  // eat "{".
+    fprintf(stderr, "%s parse: \"%s\" with type %d\n", "block", CurTok.lexeme.c_str(), CurTok.type);
+    checkToken("left brace", LBRA, true);
     std::vector<std::unique_ptr<LocalDeclarationASTnode>> localDeclarations = LocalDeclarationList::parse();
     std::vector<std::unique_ptr<StatementASTnode>> statements = StatementList::parse();
-    getNextToken();  // eat "}"
+    checkToken("right brace", RBRA, true);
     return std::make_unique<BlockASTnode>(std::move(localDeclarations), std::move(statements));
 }
 
-// param ::= type_spec IDENT
+// param ::= var_type IDENT
 struct Param {
     static TokenSet firstSet;
     static std::unique_ptr<ParamASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing param", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "param", CurTok.lexeme.c_str(), CurTok.type);
+        checkToken("variable type", Param::firstSet);
         int type = CurTok.type;
         getNextToken();  // eat type.
+        checkToken("identifier", IDENT);
         std::string ident = CurTok.lexeme;
         getNextToken();
         return std::make_unique<ParamASTnode>(std::move(type), std::move(ident));
@@ -1672,7 +1690,7 @@ TokenSet Param::firstSet = TokenSet({INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct ParamList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ParamASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing paramlist", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "paramlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> paramList;
         while (firstSet.contains(CurTok.type)) {
             getNextToken();
@@ -1687,8 +1705,9 @@ TokenSet ParamList::firstSet = TokenSet({COMMA});
 struct Params {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ParamASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing params", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "params", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ParamASTnode>> params;
+        checkToken("type", Param::firstSet);
         if (CurTok.type == VOID_TOK) {
             std::unique_ptr<ParamASTnode> voidParam = std::make_unique<ParamASTnode>(VOID_TOK, "");
             params.emplace_back(std::move(voidParam));
@@ -1707,10 +1726,10 @@ TokenSet Params::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TOK});
 struct FunctionBody {
     static TokenSet firstSet;
     static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing func body", CurTok.lexeme.c_str(), CurTok.type);
-        getNextToken();
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "func body", CurTok.lexeme.c_str(), CurTok.type);
+        checkToken("left parenthesis", LPAR, true);
         std::vector<std::unique_ptr<ParamASTnode>> params = Params::parse();
-        getNextToken();
+        checkToken("right parenthesis", RPAR, true);
         std::unique_ptr<BlockASTnode> block = std::move(Block::parse());
         return std::make_tuple(std::move(params), std::move(block));
     }
@@ -1721,8 +1740,9 @@ TokenSet FunctionBody::firstSet = TokenSet({LPAR});
 struct DeclarationBody {
     static TokenSet firstSet;
     static std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl body", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "decl body", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> functionBody;
+        checkToken("function body or semicolon", DeclarationBody::firstSet);
         if (CurTok.type == SC) {
             getNextToken();
         } else {
@@ -1731,17 +1751,20 @@ struct DeclarationBody {
         return functionBody;
     }
 };
+TokenSet DeclarationBody::firstSet = TokenSet({SC, LPAR});
 
 // decl ::= "void" IDENT func_body | var_type IDENT decl_body
 struct Declaration {
     static TokenSet firstSet;
     static std::unique_ptr<DeclarationASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "decl", CurTok.lexeme.c_str(), CurTok.type);
         std::tuple<std::vector<std::unique_ptr<ParamASTnode>>, std::unique_ptr<BlockASTnode>> declarationBody;
         std::vector<std::unique_ptr<ParamASTnode>> params;
         std::unique_ptr<BlockASTnode> block;
+        checkToken("type", Declaration::firstSet);
         int type = CurTok.type;
         getNextToken();  // eat type.
+        checkToken("identifier", IDENT);
         std::string ident = CurTok.lexeme;
         getNextToken();
         if (type == VOID_TOK) {
@@ -1760,8 +1783,9 @@ TokenSet Declaration::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOOL_TO
 struct DeclarationList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<DeclarationASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing decl list", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "decl list", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
+        checkToken("type", Declaration::firstSet);
         while (firstSet.contains(CurTok.type)) {
             declarationList.emplace_back(std::move(Declaration::parse()));
         }
@@ -1774,18 +1798,18 @@ TokenSet DeclarationList::firstSet = TokenSet({VOID_TOK, INT_TOK, FLOAT_TOK, BOO
 struct Extern {
     static TokenSet firstSet;
     static std::unique_ptr<ExternASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing extern", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "extern", CurTok.lexeme.c_str(), CurTok.type);
         getNextToken();  // eat extern.
-        checkToken("Unexpected token when parsing type", TYPE_TOKENS);
+        checkToken("type", TYPE_TOKENS);
         int type = CurTok.type;
         getNextToken();  // eat type.
-        checkToken("Unexpected token when parsing type", TYPE_TOKENS);
+        checkToken("identifier", IDENT);
         std::string ident = CurTok.lexeme;
         getNextToken();  // eat ident.
-        getNextToken();
+        checkToken("left parenthesis", LPAR, true);
         std::vector<std::unique_ptr<ParamASTnode>> params = Params::parse();
-        getNextToken();
-        getNextToken();
+        checkToken("right parenthesis", RPAR, true);
+        checkToken("semicolon", SC, true);
         return std::make_unique<ExternASTnode>(std::move(type), std::move(ident), std::move(params));
     }
 };
@@ -1795,7 +1819,7 @@ TokenSet Extern::firstSet = TokenSet({EXTERN});
 struct ExternList {
     static TokenSet firstSet;
     static std::vector<std::unique_ptr<ExternASTnode>> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing externlist", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "externlist", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
         while (firstSet.contains(CurTok.type)) {
             externList.emplace_back(std::move(Extern::parse()));
@@ -1809,7 +1833,7 @@ TokenSet ExternList::firstSet = TokenSet({EXTERN});
 struct Program {
     static TokenSet firstSet;
     static std::unique_ptr<ProgramASTnode> parse() {
-        fprintf(stderr, "%s: %s with type %d\n", "Parsing program", CurTok.lexeme.c_str(), CurTok.type);
+        fprintf(stderr, "%s parse: \"%s\" with type %d\n", "program", CurTok.lexeme.c_str(), CurTok.type);
         std::vector<std::unique_ptr<ExternASTnode>> externList;
         std::vector<std::unique_ptr<DeclarationASTnode>> declarationList;
         if (ExternList::firstSet.contains(CurTok.type)) {
@@ -1820,7 +1844,7 @@ struct Program {
             std::vector<std::unique_ptr<DeclarationASTnode>> declarationListTail = std::move(DeclarationList::parse());
             std::move(declarationListTail.begin(), declarationListTail.end(), std::back_inserter(declarationList));
         }
-        getNextToken();
+        checkToken("semicolon", EOF_TOK, true);
         return std::make_unique<ProgramASTnode>(std ::move(externList), std::move(declarationList));
     }
 };
@@ -1864,7 +1888,7 @@ int main(int argc, char** argv) {
         // get the first token
         getNextToken();
         // while (CurTok.type != EOF_TOK) {
-        //     fprintf(stderr, "Token: %s with type %d\n", CurTok.lexeme.c_str(),
+        //     fprintf(stderr, "Token: \"%s\" with type %d\n", CurTok.lexeme.c_str(),
         //             CurTok.type);
         //     getNextToken();
         // }
@@ -1900,7 +1924,7 @@ int main(int argc, char** argv) {
         fclose(pFile);  // close the file that contains the code that was parsed
         return 0;
     } catch (const std::exception& e) {
-        fprintf(stderr, "%s\n", e.what());
+        fprintf(stderr, "%s", e.what());
         std::exit(EXIT_FAILURE);
     }
 }
